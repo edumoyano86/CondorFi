@@ -1,0 +1,27 @@
+{
+  "name": "condorfi",
+  "version": "0.1.0",
+  "description": "CondorFi - Swarm de micro-bots financieros y analítica con IA",
+  "main": "bot_cripto.js",
+  "type": "module",
+  "scripts": {
+    "start": "node bot_cripto.js",
+    "dev": "node --watch bot_cripto.js",
+    "test:db": "node test_db.js"
+  },
+  "keywords": [
+    "condorfi",
+    "crypto",
+    "arbitrage",
+    "swarm",
+    "criptoya"
+  ],
+  "author": "CondorFi Team",
+  "license": "MIT",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.109.0",
+    "dotenv": "^18.0.7",
+    "node-cron": "^4.6.0",
+    "ws": "^8.22.0"
+  }
+}
