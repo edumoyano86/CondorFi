@@ -5,8 +5,12 @@
   "main": "bot_cripto.js",
   "type": "module",
   "scripts": {
+    "dev": "npm --prefix condorfi-ui run dev",
+    "dev:ui": "npm --prefix condorfi-ui run dev",
+    "dev:bot": "node --watch bot_cripto.js",
     "start": "node bot_cripto.js",
-    "dev": "node --watch bot_cripto.js",
+    "bot": "node bot_cripto.js",
+    "ui": "npm --prefix condorfi-ui run dev",
     "test:db": "node test_db.js"
   },
   "keywords": [
