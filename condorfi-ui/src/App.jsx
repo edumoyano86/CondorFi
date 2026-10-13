@@ -28,7 +28,8 @@ import {
   Volume2,
   Building2,
   BarChart3,
-  Globe
+  Globe,
+  Download
 } from 'lucide-react';
 import {
   LineChart,
@@ -216,6 +217,7 @@ export default function App() {
   const [registrosTradfi, setRegistrosTradfi] = useState([]);
   const [alertas, setAlertas] = useState([]);
   const [ejecutandoInsight, setEjecutandoInsight] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const [tabActivo, setTabActivo] = useState('cripto');
   const [conectadoSupabase, setConectadoSupabase] = useState(false);
 
@@ -327,7 +329,10 @@ export default function App() {
   const ejecutarAnalisisQuant = async () => {
     setEjecutandoInsight(true);
     try {
-      const res = await fetch(`/api/generar-insights?moneda=${monedaActiva}`);
+      const endpointUrl = tabActivo === 'tradfi'
+        ? `/api/generar-insights?mercado=tradfi&ticker=SPY`
+        : `/api/generar-insights?mercado=cripto&moneda=${monedaActiva}`;
+      const res = await fetch(endpointUrl);
       if (res.ok) {
         const data = await res.json();
         if (data.alerta) {
@@ -348,6 +353,114 @@ export default function App() {
       console.warn('Error al invocar /api/generar-insights:', err);
     } finally {
       setEjecutandoInsight(false);
+    }
+  };
+
+  /**
+   * Exporta las cotizaciones históricas a un archivo CSV nativo mediante Blob y URL.createObjectURL.
+   * Consulta los últimos 1000 registros de Supabase con fallback a los registros en memoria.
+   */
+  const descargarHistorialCSV = async () => {
+    if (isExporting) return;
+    setIsExporting(true);
+
+    try {
+      let registrosAExportar = [];
+
+      // 1. Intentar consultar hasta 1000 registros recientes en Supabase
+      if (supabase) {
+        try {
+          const { data, error } = await supabase
+            .from('cotizaciones_historicas')
+            .select('timestamp, moneda, exchange_compra, exchange_venta, exchange, precio_compra, precio_venta, spread')
+            .order('timestamp', { ascending: false })
+            .limit(1000);
+
+          if (!error && data && data.length > 0) {
+            registrosAExportar = data;
+          }
+        } catch (e) {
+          console.warn('[CSV Export] Aviso al consultar Supabase:', e);
+        }
+      }
+
+      // 2. Fallback a registros en memoria si la consulta no devuelve datos
+      if (registrosAExportar.length === 0) {
+        registrosAExportar = registrosCompletos.length > 0 ? registrosCompletos : registrosMoneda;
+      }
+
+      if (registrosAExportar.length === 0) {
+        alert('No hay cotizaciones disponibles para exportar en este momento.');
+        return;
+      }
+
+      // 3. Encabezados exactos requeridos
+      const encabezados = ['timestamp', 'moneda', 'exchange_compra', 'exchange_venta', 'spread'];
+
+      // Función para escapar campos con comas, comillas o saltos de línea
+      const escapar = val => {
+        const str = String(val ?? '');
+        return str.includes(',') || str.includes('"') || str.includes('\n')
+          ? `"${str.replace(/"/g, '""')}"`
+          : str;
+      };
+
+      // 4. Conversión de objetos JSON a filas de texto CSV
+      const filasCSV = registrosAExportar.map(r => {
+        const timestamp = r.timestamp || new Date().toISOString();
+        const moneda = r.moneda || monedaActiva || 'USDT';
+
+        // Determinar exchange_compra y exchange_venta
+        let exCompra = r.exchange_compra || '';
+        let exVenta = r.exchange_venta || '';
+        if (!exCompra && r.exchange && r.exchange.includes('->')) {
+          const partes = r.exchange.split('->');
+          exCompra = partes[0]?.trim();
+          exVenta = partes[1]?.replace(/\(.*?\)/g, '')?.trim();
+        } else if (!exCompra) {
+          exCompra = r.exchange || 'N/A';
+          exVenta = r.exchange || 'N/A';
+        }
+
+        // Calcular o formatear el spread
+        let spreadValor = 0;
+        if (typeof r.spread === 'number' && !isNaN(r.spread)) {
+          spreadValor = r.spread;
+        } else if (r.precio_compra > 0 && r.precio_venta > 0) {
+          spreadValor = Number((((r.precio_venta - r.precio_compra) / r.precio_compra) * 100).toFixed(4));
+        }
+
+        return [
+          escapar(timestamp),
+          escapar(moneda),
+          escapar(exCompra),
+          escapar(exVenta),
+          escapar(spreadValor.toFixed(4))
+        ].join(',');
+      });
+
+      const contenidoCSV = [encabezados.join(','), ...filasCSV].join('\r\n');
+
+      // 5. Creación del objeto Blob nativo y enlace temporal <a>
+      const blob = new Blob([contenidoCSV], { type: 'text/csv;charset=utf-8;' });
+      const fechaActual = new Date().toISOString().slice(0, 10);
+      const nombreArchivo = `condorfi_export_${fechaActual}.csv`;
+
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', nombreArchivo);
+      document.body.appendChild(link);
+      link.click();
+
+      // Limpieza del enlace y liberación del recurso
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) {
+      console.error('Error al exportar datos a CSV:', err);
+      alert('Ocurrió un error al generar la descarga del archivo CSV.');
+    } finally {
+      setIsExporting(false);
     }
   };
 
@@ -2168,7 +2281,23 @@ export default function App() {
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* BOTÓN EXPORTAR DATOS CSV (Estilo secundario / fantasma) */}
+            <button
+              onClick={descargarHistorialCSV}
+              disabled={isExporting}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white hover:bg-gray-50 text-gray-700 hover:text-gray-900 border border-gray-300 transition active:scale-95 disabled:opacity-50 cursor-pointer shadow-2xs"
+              title="Descargar historial de cotizaciones en formato CSV"
+            >
+              {isExporting ? (
+                <RefreshCw className="w-3.5 h-3.5 text-orange-600 animate-spin" />
+              ) : (
+                <Download className="w-3.5 h-3.5 text-gray-500" />
+              )}
+              <span>{isExporting ? 'Exportando...' : 'Exportar Datos (CSV)'}</span>
+            </button>
+
+            {/* BOTÓN ESCANEAR ANOMALÍAS */}
             <button
               onClick={ejecutarAnalisisQuant}
               disabled={ejecutandoInsight}
