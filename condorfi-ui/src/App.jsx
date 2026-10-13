@@ -168,6 +168,29 @@ async function solicitarPermisoNotificaciones() {
   return false;
 }
 
+/**
+ * Formatea un timestamp a una representación relativa amigable ("Hace 5 min", "Hace 2 h", etc.)
+ */
+function formatearTiempoRelativo(timestamp) {
+  if (!timestamp) return 'Reciente';
+  try {
+    const ahora = Date.now();
+    const fecha = new Date(timestamp).getTime();
+    if (isNaN(fecha)) return 'Reciente';
+    const diffSegundos = Math.floor((ahora - fecha) / 1000);
+
+    if (diffSegundos < 60) return 'Hace unos segundos';
+    const diffMinutos = Math.floor(diffSegundos / 60);
+    if (diffMinutos < 60) return `Hace ${diffMinutos} min`;
+    const diffHoras = Math.floor(diffMinutos / 60);
+    if (diffHoras < 24) return `Hace ${diffHoras} h`;
+    const diffDias = Math.floor(diffHoras / 24);
+    return `Hace ${diffDias} d`;
+  } catch {
+    return 'Reciente';
+  }
+}
+
 // Lista de exchanges de referencia
 const EXCHANGES_CONFIG = [
   { id: 'node-lemon',        nombre: 'Lemon Cash',    clave: 'lemon',        rol: 'Mapeo Liquidez Retail' },
@@ -191,6 +214,8 @@ export default function App() {
   const [modoTiempo, setModoTiempo] = useState('24H');
   const [registrosCompletos, setRegistrosCompletos] = useState([]);
   const [registrosTradfi, setRegistrosTradfi] = useState([]);
+  const [alertas, setAlertas] = useState([]);
+  const [ejecutandoInsight, setEjecutandoInsight] = useState(false);
   const [tabActivo, setTabActivo] = useState('cripto');
   const [conectadoSupabase, setConectadoSupabase] = useState(false);
 
@@ -269,6 +294,21 @@ export default function App() {
       } catch (eTradfi) {
         console.warn('[TradFi] Aviso al consultar cotizaciones_tradfi:', eTradfi);
       }
+
+      // Consulta de Alertas Quants desde alertas_mercado (últimas 10 alertas ordenadas por timestamp desc)
+      try {
+        const { data: dataAlertas, error: errAlertas } = await supabase
+          .from('alertas_mercado')
+          .select('*')
+          .order('timestamp', { ascending: false })
+          .limit(10);
+
+        if (!errAlertas && dataAlertas) {
+          setAlertas(dataAlertas);
+        }
+      } catch (eAlertas) {
+        console.warn('[Alertas] Aviso al consultar alertas_mercado:', eAlertas);
+      }
     } catch (err) {
       console.error('Error al consultar Supabase:', err);
       setConectadoSupabase(false);
@@ -282,6 +322,34 @@ export default function App() {
   useEffect(() => {
     fetchCotizacionesReales();
   }, [fetchCotizacionesReales]);
+
+  // Disparador manual para el Motor de Insights Quants (Serverless Function /api/generar-insights)
+  const ejecutarAnalisisQuant = async () => {
+    setEjecutandoInsight(true);
+    try {
+      const res = await fetch(`/api/generar-insights?moneda=${monedaActiva}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.alerta) {
+          setAlertas(prev => [data.alerta, ...prev.filter(a => a.id !== data.alerta.id).slice(0, 9)]);
+        }
+      }
+      if (supabase) {
+        const { data: dataAlertas } = await supabase
+          .from('alertas_mercado')
+          .select('*')
+          .order('timestamp', { ascending: false })
+          .limit(10);
+        if (dataAlertas && dataAlertas.length > 0) {
+          setAlertas(dataAlertas);
+        }
+      }
+    } catch (err) {
+      console.warn('Error al invocar /api/generar-insights:', err);
+    } finally {
+      setEjecutandoInsight(false);
+    }
+  };
 
   // Filtrado de registros exclusivos para la moneda seleccionada
   const registrosMoneda = useMemo(() => {
@@ -2078,6 +2146,134 @@ export default function App() {
           </section>
         </div>
       )}
+
+      {/* =========================================================================
+          RADAR DE INSIGHTS QUANTS (Feed de Alertas Financieras)
+      ========================================================================== */}
+      <section id="radar-insights-quants" className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-xs">
+        {/* Cabecera del Panel */}
+        <div className="p-4 sm:p-5 border-b border-gray-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-gradient-to-r from-gray-50/80 via-white to-gray-50/50">
+          <div>
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-orange-600" />
+              <h3 className="text-sm font-bold text-gray-900 tracking-tight">
+                Radar de Insights Quants
+              </h3>
+              <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-orange-50 text-orange-700 border border-orange-200">
+                SMA + 1.5σ Engine
+              </span>
+            </div>
+            <p className="text-xs text-gray-500 mt-0.5 font-mono">
+              Detección algorítmica de anomalías estadísticas y oportunidades de arbitraje en tiempo real
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={ejecutarAnalisisQuant}
+              disabled={ejecutandoInsight}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-gray-100 hover:bg-gray-200 text-gray-700 border border-gray-200 transition active:scale-95 disabled:opacity-50 cursor-pointer shadow-2xs"
+              title="Ejecutar análisis estadístico sobre los últimos 100 registros con el microservicio"
+            >
+              <Zap className={`w-3.5 h-3.5 text-orange-600 ${ejecutandoInsight ? 'animate-bounce' : ''}`} />
+              <span>{ejecutandoInsight ? 'Calculando...' : 'Escanear Anomalías'}</span>
+            </button>
+            <span className="text-[11px] font-mono text-gray-500 px-2.5 py-1 rounded-md bg-gray-50 border border-gray-200">
+              {alertas.length} {alertas.length === 1 ? 'alerta' : 'alertas'}
+            </span>
+          </div>
+        </div>
+
+        {/* Feed de Tarjetas de Notificación o Estado Vacío */}
+        <div className="p-5">
+          {alertas.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {alertas.map((alerta, index) => {
+                const esOportunidadAlta = alerta.tipo_alerta === 'OPORTUNIDAD_ALTA';
+                const badgeClass = esOportunidadAlta
+                  ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                  : 'bg-cyan-50 text-cyan-800 border-cyan-300';
+                const monedaPar = `${alerta.moneda || 'USDT'}/ARS`;
+                const tiempoRelativo = formatearTiempoRelativo(alerta.timestamp);
+
+                return (
+                  <div
+                    key={alerta.id || index}
+                    className={`p-4 rounded-xl border transition duration-150 shadow-2xs hover:shadow-xs flex flex-col justify-between ${
+                      esOportunidadAlta
+                        ? 'border-emerald-200 bg-emerald-50/20 hover:border-emerald-300'
+                        : 'border-gray-200 bg-white hover:border-gray-300'
+                    }`}
+                  >
+                    <div>
+                      {/* Cabecera de la tarjeta: Badge + Par + Tiempo */}
+                      <div className="flex items-center justify-between gap-2 mb-2.5">
+                        <div className="flex items-center gap-2">
+                          <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-mono font-bold border ${badgeClass}`}>
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                            {alerta.tipo_alerta || 'OPORTUNIDAD_ALTA'}
+                          </span>
+                          <span className="text-xs font-mono font-bold text-gray-900 px-1.5 py-0.5 rounded bg-gray-100 border border-gray-200">
+                            {monedaPar}
+                          </span>
+                        </div>
+                        <span className="text-[10px] font-mono text-gray-400 flex items-center gap-1">
+                          <Clock className="w-3 h-3 text-gray-400" />
+                          {tiempoRelativo}
+                        </span>
+                      </div>
+
+                      {/* Mensaje descriptivo */}
+                      <p className="text-xs text-gray-700 font-medium leading-relaxed mb-3">
+                        {alerta.mensaje}
+                      </p>
+                    </div>
+
+                    {/* Métricas y exchanges al pie de la tarjeta */}
+                    <div className="pt-2.5 border-t border-gray-100 flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono">
+                      {(alerta.exchange_compra || alerta.exchange_venta) && (
+                        <div className="flex items-center gap-1 text-gray-600 truncate">
+                          <span className="font-semibold text-gray-800">{alerta.exchange_compra || 'Compra'}</span>
+                          <ArrowRight className="w-3 h-3 text-gray-400" />
+                          <span className="font-semibold text-gray-800">{alerta.exchange_venta || 'Venta'}</span>
+                        </div>
+                      )}
+                      {typeof alerta.spread_actual === 'number' && (
+                        <span className="font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+                          +{alerta.spread_actual.toFixed(2)}% Spread
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            /* Estado vacío profesional */
+            <div className="py-10 px-4 flex flex-col items-center justify-center text-center">
+              <div className="w-12 h-12 rounded-2xl bg-orange-50 border border-orange-200 flex items-center justify-center mb-3 text-orange-600 shadow-2xs">
+                <Activity className="w-6 h-6 animate-pulse" />
+              </div>
+              <h4 className="text-sm font-bold text-gray-800 mb-1">
+                Analizando volatilidad del mercado... Sin anomalías recientes
+              </h4>
+              <p className="text-xs text-gray-500 font-mono max-w-md">
+                El motor estadístico está evaluando cotizaciones históricas (SMA y desviación estándar a 1.5σ). Las oportunidades de arbitraje que superen el umbral se publicarán aquí automáticamente.
+              </p>
+              <div className="mt-4 flex items-center gap-2">
+                <button
+                  onClick={ejecutarAnalisisQuant}
+                  disabled={ejecutandoInsight}
+                  className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-orange-600 hover:bg-orange-700 text-white transition active:scale-95 shadow-xs disabled:opacity-50 cursor-pointer"
+                >
+                  <Zap className={`w-3.5 h-3.5 ${ejecutandoInsight ? 'animate-spin' : ''}`} />
+                  <span>{ejecutandoInsight ? 'Ejecutando algoritmo...' : 'Ejecutar Análisis Ahora'}</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </section>
     </div>
   </main>
 </div>
