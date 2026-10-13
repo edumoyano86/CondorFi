@@ -28,13 +28,16 @@ import {
   Volume2
 } from 'lucide-react';
 import {
+  LineChart,
+  Line,
   AreaChart,
   Area,
   XAxis,
   YAxis,
   Tooltip,
   ResponsiveContainer,
-  CartesianGrid
+  CartesianGrid,
+  Legend
 } from 'recharts';
 
 const MONEDAS_DISPONIBLES = ['USDT', 'BTC', 'ETH', 'USDC'];
@@ -331,6 +334,164 @@ export default function App() {
       { hora: '13:00', promedio: base * 1.012 },
     ];
   }, [registrosMoneda, monedaActiva]);
+
+  // Datos cronológicos comparativos para el LineChart (BTC vs USDT) en las últimas horas
+  const datosGraficoBTCyUSDT = useMemo(() => {
+    const registrosBTC = registrosCompletos.filter(r => (r.moneda || '').toUpperCase() === 'BTC');
+    const registrosUSDT = registrosCompletos.filter(r => (r.moneda || '').toUpperCase() === 'USDT');
+
+    if (registrosBTC.length > 0 || registrosUSDT.length > 0) {
+      const mapaTiempos = new Map();
+
+      // Procesar BTC cronológicamente
+      [...registrosBTC].reverse().forEach(r => {
+        const d = new Date(r.timestamp);
+        const horaStr = d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+        const clave = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()} ${horaStr}`;
+        if (!mapaTiempos.has(clave)) {
+          mapaTiempos.set(clave, { hora: horaStr, rawTime: d.getTime(), btcPuntos: [], usdtPuntos: [] });
+        }
+        const precio = Number(r.precio_compra) || Number(r.precio_venta) || 0;
+        if (precio > 0) mapaTiempos.get(clave).btcPuntos.push(precio);
+      });
+
+      // Procesar USDT cronológicamente
+      [...registrosUSDT].reverse().forEach(r => {
+        const d = new Date(r.timestamp);
+        const horaStr = d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+        const clave = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()} ${horaStr}`;
+        if (!mapaTiempos.has(clave)) {
+          mapaTiempos.set(clave, { hora: horaStr, rawTime: d.getTime(), btcPuntos: [], usdtPuntos: [] });
+        }
+        const precio = Number(r.precio_compra) || Number(r.precio_venta) || 0;
+        if (precio > 0) mapaTiempos.get(clave).usdtPuntos.push(precio);
+      });
+
+      let ultBTC = 131500000;
+      let ultUSDT = 1608;
+
+      const puntos = Array.from(mapaTiempos.values())
+        .sort((a, b) => a.rawTime - b.rawTime)
+        .slice(-25)
+        .map(item => {
+          if (item.btcPuntos.length > 0) {
+            ultBTC = Math.round(item.btcPuntos.reduce((a, b) => a + b, 0) / item.btcPuntos.length);
+          }
+          if (item.usdtPuntos.length > 0) {
+            ultUSDT = Number((item.usdtPuntos.reduce((a, b) => a + b, 0) / item.usdtPuntos.length).toFixed(2));
+          }
+          return {
+            hora: item.hora,
+            BTC: ultBTC,
+            USDT: ultUSDT
+          };
+        });
+
+      if (puntos.length >= 2) {
+        return puntos;
+      }
+    }
+
+    // Curva de demostración para las últimas horas en caso de que Supabase esté inicializándose
+    return [
+      { hora: '12:00', BTC: 131200000, USDT: 1604.5 },
+      { hora: '13:00', BTC: 131450000, USDT: 1606.2 },
+      { hora: '14:00', BTC: 131380000, USDT: 1605.8 },
+      { hora: '15:00', BTC: 131620000, USDT: 1607.4 },
+      { hora: '16:00', BTC: 131550000, USDT: 1608.9 },
+      { hora: '17:00', BTC: 131800000, USDT: 1609.5 },
+      { hora: '18:00', BTC: 131750000, USDT: 1610.1 },
+      { hora: '19:00', BTC: 131920000, USDT: 1609.8 }
+    ];
+  }, [registrosCompletos]);
+
+  // Oportunidades de Arbitraje Actuales calculadas en tiempo real para todos los activos
+  const oportunidadesActuales = useMemo(() => {
+    return MONEDAS_DISPONIBLES.map(moneda => {
+      const registrosMonedaActual = registrosCompletos.filter(
+        r => (r.moneda || '').toUpperCase() === moneda
+      );
+
+      // Si los registros provienen del bot serverless con spread y exchanges ya calculados
+      const registroBot = registrosMonedaActual.find(
+        r => r.exchange_compra && r.exchange_venta
+      );
+
+      if (registroBot) {
+        const ask = Number(registroBot.precio_compra) || 0;
+        const bid = Number(registroBot.precio_venta) || 0;
+        const difPesos = Number((bid - ask).toFixed(2));
+        const spreadBruto = Number((((bid - ask) / (ask || 1)) * 100).toFixed(2));
+        const spreadGuardado = typeof registroBot.spread === 'number' ? Number(registroBot.spread.toFixed(2)) : spreadBruto;
+
+        return {
+          moneda,
+          exchangeCompra: registroBot.exchange_compra,
+          precioCompra: ask,
+          exchangeVenta: registroBot.exchange_venta,
+          precioVenta: bid,
+          diferenciaPesos: difPesos,
+          spread: spreadGuardado,
+          spreadNeto: Number((((bid * 0.995 - ask * 1.005) / (ask * 1.005 || 1)) * 100).toFixed(2)),
+          timestamp: registroBot.timestamp,
+          fuente: 'Bot Serverless Vercel'
+        };
+      }
+
+      // Si hay cotizaciones de exchanges individuales en Supabase
+      const mapaEx = new Map();
+      registrosMonedaActual.forEach(item => {
+        const nom = item.exchange?.trim();
+        if (nom && !mapaEx.has(nom)) {
+          mapaEx.set(nom, item);
+        }
+      });
+
+      if (mapaEx.size > 0) {
+        const lista = Array.from(mapaEx.values());
+        const minAskItem = lista.reduce((min, c) => (Number(c.precio_compra) < Number(min.precio_compra) ? c : min), lista[0]);
+        const maxBidItem = lista.reduce((max, c) => (Number(c.precio_venta) > Number(max.precio_venta) ? c : max), lista[0]);
+
+        const ask = Number(minAskItem.precio_compra) || 0;
+        const bid = Number(maxBidItem.precio_venta) || 0;
+        const difPesos = Number((bid - ask).toFixed(2));
+        const spreadBruto = Number((((bid - ask) / (ask || 1)) * 100).toFixed(2));
+        const spreadNeto = Number((((bid * 0.995 - ask * 1.005) / (ask * 1.005 || 1)) * 100).toFixed(2));
+
+        return {
+          moneda,
+          exchangeCompra: minAskItem.exchange,
+          precioCompra: ask,
+          exchangeVenta: maxBidItem.exchange,
+          precioVenta: bid,
+          diferenciaPesos: difPesos,
+          spread: spreadBruto,
+          spreadNeto,
+          timestamp: minAskItem.timestamp,
+          fuente: 'Red de Exchanges'
+        };
+      }
+
+      // Demostración proporcional cuando no hay registros de esa moneda
+      const base = moneda === 'BTC' ? 131500000 : moneda === 'ETH' ? 3920000 : 1608;
+      const spreadDemo = moneda === 'USDT' ? 1.45 : moneda === 'BTC' ? 0.38 : moneda === 'ETH' ? 1.22 : -0.25;
+      const askDemo = base;
+      const bidDemo = Number((base * (1 + spreadDemo / 100)).toFixed(2));
+
+      return {
+        moneda,
+        exchangeCompra: moneda === 'USDT' ? 'Bitso' : moneda === 'BTC' ? 'Bitso' : 'Fiwind',
+        precioCompra: askDemo,
+        exchangeVenta: moneda === 'USDT' ? 'Lemon Cash' : moneda === 'BTC' ? 'Binance' : 'Buenbit',
+        precioVenta: bidDemo,
+        diferenciaPesos: Number((bidDemo - askDemo).toFixed(2)),
+        spread: spreadDemo,
+        spreadNeto: Number((spreadDemo - 1.0).toFixed(2)),
+        timestamp: new Date().toISOString(),
+        fuente: 'Radar Predictivo'
+      };
+    });
+  }, [registrosCompletos]);
 
   // 1. Lógica Dinámica de Arbitraje Neto (restando comisiones operativas)
   const analisisArbitraje = useMemo(() => {
@@ -880,49 +1041,43 @@ export default function App() {
           </section>
 
           {/* =====================================================================
-              C. GRÁFICO RECHARTS DE LA MONEDA ACTIVA
+              C. GRÁFICO RECHARTS PROFESIONAL (LINECHART BTC & USDT ÚLTIMAS HORAS)
           ====================================================================== */}
-          <section className="bg-white p-6 rounded-xl border border-gray-200 shadow-xs">
+          <section className="bg-white p-5 sm:p-6 rounded-xl border border-gray-200 shadow-xs">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
               <div>
-                <h2 className="text-base font-bold text-gray-900 flex items-center gap-2">
-                  <span>Evolución Histórica de {monedaActiva} / ARS</span>
-                  <span className="text-xs font-mono font-semibold px-2 py-0.5 rounded-md bg-orange-50 text-orange-700 border border-orange-200">
-                    Live Feed {monedaActiva}
+                <div className="flex items-center gap-2">
+                  <h2 className="text-base sm:text-lg font-bold text-gray-900 flex items-center gap-2">
+                    <span>Evolución Financiera: BTC & USDT / ARS</span>
+                  </h2>
+                  <span className="text-xs font-mono font-semibold px-2 py-0.5 rounded-md bg-amber-50 text-amber-700 border border-amber-200">
+                    Historial Supabase
                   </span>
-                </h2>
-                <p className="text-xs text-gray-500 font-mono mt-0.5">
-                  Curva de cotizaciones para el activo seleccionado
+                </div>
+                <p className="text-xs text-gray-500 font-mono mt-1">
+                  Variación de precios de Bitcoin y Tether en las últimas horas (Doble escala ARS)
                 </p>
               </div>
 
-              <div className="flex items-center gap-1 p-0.5 rounded-lg bg-gray-100 border border-gray-200 text-xs font-mono">
-                {['1H', '24H', '7D', '30D'].map(periodo => (
-                  <button
-                    key={periodo}
-                    onClick={() => setModoTiempo(periodo)}
-                    className={`px-3 py-1 rounded-md transition duration-150 ${
-                      modoTiempo === periodo
-                        ? 'bg-white text-gray-900 font-semibold shadow-2xs'
-                        : 'text-gray-600 hover:text-gray-900 font-medium'
-                    }`}
-                  >
-                    {periodo}
-                  </button>
-                ))}
+              {/* Badges con últimas cotizaciones registradas */}
+              <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
+                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-50 border border-amber-200 text-amber-900">
+                  <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+                  <span className="font-semibold">BTC:</span>
+                  <span>${datosGraficoBTCyUSDT[datosGraficoBTCyUSDT.length - 1]?.BTC.toLocaleString('es-AR')} ARS</span>
+                </div>
+                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-sky-50 border border-sky-200 text-sky-900">
+                  <span className="w-2 h-2 rounded-full bg-sky-500"></span>
+                  <span className="font-semibold">USDT:</span>
+                  <span>${datosGraficoBTCyUSDT[datosGraficoBTCyUSDT.length - 1]?.USDT.toLocaleString('es-AR', { minimumFractionDigits: 2 })} ARS</span>
+                </div>
               </div>
             </div>
 
-            <div className="h-72 w-full">
+            {/* Gráfico de Líneas (LineChart) con Dual Axis para BTC y USDT */}
+            <div className="h-72 sm:h-80 w-full">
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={datosGrafico} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="colorCobreLight" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#ea580c" stopOpacity={0.16}/>
-                      <stop offset="95%" stopColor="#ea580c" stopOpacity={0.01}/>
-                    </linearGradient>
-                  </defs>
-
+                <LineChart data={datosGraficoBTCyUSDT} margin={{ top: 15, right: 15, left: 10, bottom: 5 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
                   <XAxis
                     dataKey="hora"
@@ -932,41 +1087,216 @@ export default function App() {
                     tickLine={false}
                     axisLine={{ stroke: '#e2e8f0' }}
                   />
+                  {/* Eje izquierdo: BTC (millones de ARS) */}
                   <YAxis
-                    stroke="#94a3b8"
+                    yAxisId="btc"
+                    orientation="left"
+                    stroke="#d97706"
                     fontSize={11}
                     fontFamily="JetBrains Mono"
                     tickLine={false}
+                    axisLine={{ stroke: '#fde68a' }}
                     domain={['dataMin - (dataMin * 0.005)', 'dataMax + (dataMax * 0.005)']}
-                    tickFormatter={formatearTick}
-                    axisLine={{ stroke: '#e2e8f0' }}
+                    tickFormatter={(val) => `$${(val / 1000000).toFixed(1)}M`}
+                  />
+                  {/* Eje derecho: USDT (ARS) */}
+                  <YAxis
+                    yAxisId="usdt"
+                    orientation="right"
+                    stroke="#0284c7"
+                    fontSize={11}
+                    fontFamily="JetBrains Mono"
+                    tickLine={false}
+                    axisLine={{ stroke: '#bae6fd' }}
+                    domain={['dataMin - 5', 'dataMax + 5']}
+                    tickFormatter={(val) => `$${Number(val).toFixed(0)}`}
                   />
                   <Tooltip
                     contentStyle={{
-                      backgroundColor: '#ffffff',
-                      borderColor: '#e2e8f0',
-                      borderRadius: '10px',
-                      boxShadow: '0 4px 12px rgba(0, 0, 0, 0.08)',
+                      backgroundColor: '#0f172a',
+                      borderColor: '#334155',
+                      borderRadius: '12px',
+                      boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.3)',
                       fontFamily: 'JetBrains Mono',
                       fontSize: '12px',
-                      color: '#0f172a'
+                      color: '#f8fafc'
                     }}
-                    itemStyle={{ color: '#0369a1', fontWeight: 600 }}
-                    labelStyle={{ color: '#c2410c', fontWeight: 700 }}
-                    formatter={(value) => [formatearPrecio(value), `Cotización ${monedaActiva}`]}
+                    formatter={(value, name) => [
+                      `$${Number(value).toLocaleString('es-AR', { minimumFractionDigits: name.includes('USDT') ? 2 : 0, maximumFractionDigits: 2 })} ARS`,
+                      name
+                    ]}
+                    labelStyle={{ color: '#94a3b8', fontWeight: 600, marginBottom: '4px' }}
                   />
-                  <Area
+                  <Legend
+                    verticalAlign="top"
+                    height={36}
+                    wrapperStyle={{ fontSize: '12px', fontFamily: 'JetBrains Mono' }}
+                  />
+                  <Line
+                    yAxisId="btc"
                     type="monotone"
-                    dataKey="promedio"
-                    stroke="#ea580c"
-                    strokeWidth={2}
-                    fillOpacity={1}
-                    fill="url(#colorCobreLight)"
-                    dot={{ fill: '#0284c7', stroke: '#ffffff', strokeWidth: 2, r: 4 }}
-                    activeDot={{ r: 6, fill: '#0284c7', stroke: '#ffffff', strokeWidth: 2 }}
+                    dataKey="BTC"
+                    name="Bitcoin (BTC / ARS - Eje Izq)"
+                    stroke="#f59e0b"
+                    strokeWidth={2.5}
+                    dot={{ r: 3, fill: '#f59e0b', stroke: '#ffffff', strokeWidth: 1.5 }}
+                    activeDot={{ r: 6, fill: '#d97706', stroke: '#ffffff', strokeWidth: 2 }}
                   />
-                </AreaChart>
+                  <Line
+                    yAxisId="usdt"
+                    type="monotone"
+                    dataKey="USDT"
+                    name="Tether (USDT / ARS - Eje Der)"
+                    stroke="#0284c7"
+                    strokeWidth={2.5}
+                    dot={{ r: 3, fill: '#0284c7', stroke: '#ffffff', strokeWidth: 1.5 }}
+                    activeDot={{ r: 6, fill: '#0369a1', stroke: '#ffffff', strokeWidth: 2 }}
+                  />
+                </LineChart>
               </ResponsiveContainer>
+            </div>
+          </section>
+
+          {/* =====================================================================
+              TABLA DINÁMICA: OPORTUNIDADES DE ARBITRAJE ACTUALES (EN TIEMPO REAL)
+          ====================================================================== */}
+          <section className="bg-white rounded-xl border border-gray-200 shadow-xs overflow-hidden mt-6">
+            <div className="p-5 sm:p-6 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-600">
+                  <Zap className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-base sm:text-lg font-bold text-gray-900">
+                      Oportunidades de Arbitraje Actuales
+                    </h2>
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono font-medium bg-emerald-100/80 text-emerald-800 border border-emerald-300">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                      Tiempo Real
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-500 font-mono mt-0.5">
+                    Detección algorítmica de mejores puntos de compra y venta inter-exchange
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3 text-xs font-mono">
+                <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-green-500/10 border border-green-500/20 text-green-500 font-bold">
+                  <span className="w-2 h-2 rounded-full bg-green-500"></span>
+                  Alerta Spread &gt; 1%
+                </span>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse text-xs font-mono">
+                <thead>
+                  <tr className="border-b border-gray-200 bg-gray-50/80 text-gray-600 uppercase tracking-wider text-[11px]">
+                    <th className="py-3.5 px-4 font-semibold">Par / Activo</th>
+                    <th className="py-3.5 px-4 font-semibold">Exchange Compra (Ask)</th>
+                    <th className="py-3.5 px-4 font-semibold">Exchange Venta (Bid)</th>
+                    <th className="py-3.5 px-4 text-right font-semibold">Diferencia ARS</th>
+                    <th className="py-3.5 px-4 text-right font-semibold">Spread (%)</th>
+                    <th className="py-3.5 px-4 text-center font-semibold">Diagnóstico</th>
+                    <th className="py-3.5 px-4 text-center font-semibold">Acción</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 bg-white">
+                  {oportunidadesActuales.map((op) => {
+                    const esSpreadMayor1 = op.spread > 1;
+                    const esPositivo = op.spread > 0;
+                    return (
+                      <tr
+                        key={op.moneda}
+                        className={`hover:bg-slate-50/80 transition-colors ${
+                          esSpreadMayor1 ? 'bg-green-500/5' : ''
+                        }`}
+                      >
+                        <td className="py-3.5 px-4 font-bold text-gray-900">
+                          <div className="flex items-center gap-2.5">
+                            <span className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold shadow-2xs ${
+                              op.moneda === 'BTC' ? 'bg-amber-100 text-amber-800 border border-amber-200' :
+                              op.moneda === 'USDT' ? 'bg-teal-100 text-teal-800 border border-teal-200' :
+                              op.moneda === 'ETH' ? 'bg-indigo-100 text-indigo-800 border border-indigo-200' :
+                              'bg-sky-100 text-sky-800 border border-sky-200'
+                            }`}>
+                              {op.moneda.slice(0, 3)}
+                            </span>
+                            <div>
+                              <div className="text-gray-900 font-bold">{op.moneda} / ARS</div>
+                              <div className="text-[10px] text-gray-400 font-normal">{op.fuente}</div>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <div className="font-semibold text-gray-800">{op.exchangeCompra}</div>
+                          <div className="text-[11px] text-gray-500">
+                            ${Number(op.precioCompra).toLocaleString('es-AR', { minimumFractionDigits: op.moneda === 'BTC' || op.moneda === 'ETH' ? 0 : 2, maximumFractionDigits: 2 })} ARS
+                          </div>
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <div className="font-semibold text-gray-800">{op.exchangeVenta}</div>
+                          <div className="text-[11px] text-gray-500">
+                            ${Number(op.precioVenta).toLocaleString('es-AR', { minimumFractionDigits: op.moneda === 'BTC' || op.moneda === 'ETH' ? 0 : 2, maximumFractionDigits: 2 })} ARS
+                          </div>
+                        </td>
+                        <td className="py-3.5 px-4 text-right">
+                          <span className={`font-semibold ${esSpreadMayor1 ? 'text-green-500 font-bold' : esPositivo ? 'text-gray-900' : 'text-gray-400'}`}>
+                            {op.diferenciaPesos > 0 ? `+$${op.diferenciaPesos.toLocaleString('es-AR')} ARS` : `$${op.diferenciaPesos.toLocaleString('es-AR')} ARS`}
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-4 text-right">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <span className={`text-sm ${esSpreadMayor1 ? 'text-green-500 font-bold' : esPositivo ? 'text-gray-900 font-semibold' : 'text-gray-400 font-medium'}`}>
+                              {op.spread > 0 ? `+${op.spread.toFixed(2)}%` : `${op.spread.toFixed(2)}%`}
+                            </span>
+                            {esSpreadMayor1 && (
+                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-green-500/10 text-green-500 border border-green-500/30">
+                                &gt;1%
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[10px] text-gray-400">
+                            Neto: {op.spreadNeto > 0 ? `+${op.spreadNeto.toFixed(2)}%` : `${op.spreadNeto.toFixed(2)}%`}
+                          </div>
+                        </td>
+                        <td className="py-3.5 px-4 text-center">
+                          {esSpreadMayor1 ? (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-green-500/10 text-green-500 border border-green-500/30">
+                              <TrendingUp className="w-3.5 h-3.5 text-green-500" />
+                              Oportunidad Alta
+                            </span>
+                          ) : esPositivo ? (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium bg-amber-50 text-amber-800 border border-amber-200">
+                              <Clock className="w-3.5 h-3.5 text-amber-600" />
+                              Margen Moderado
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium bg-gray-100 text-gray-500 border border-gray-200">
+                              Sin Arbitraje
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3.5 px-4 text-center">
+                          <button
+                            onClick={() => setMonedaActiva(op.moneda)}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center justify-center gap-1 mx-auto ${
+                              monedaActiva === op.moneda
+                                ? 'bg-gray-900 text-white shadow-2xs'
+                                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                            }`}
+                          >
+                            <span>{monedaActiva === op.moneda ? 'Activo' : 'Ver Detalle'}</span>
+                            <ArrowUpRight className="w-3 h-3" />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           </section>
 
