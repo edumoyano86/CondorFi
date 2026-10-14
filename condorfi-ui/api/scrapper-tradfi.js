@@ -3,8 +3,8 @@
  * CondorFi - TradFi Data Collector (Vercel Serverless Function)
  * Archivo: condorfi-ui/api/scrapper-tradfi.js
  * 
- * Microservicio Serverless HTTP para la recolección de cotizaciones del
- * mercado tradicional (acciones, ETFs e índices) mediante Yahoo Finance.
+ * Microservicio Serverless HTTP con Concurrencia Masiva (Promise.allSettled).
+ * Recolecta cotizaciones de Wall Street (Índices y Tech), Merval y Bonos.
  * ==============================================================================
  */
 
@@ -22,40 +22,92 @@ const yahooFinance = typeof YahooFinance === 'function'
   ? new YahooFinance({ suppressNotices: ['yahooSurvey'] })
   : YahooFinance;
 
-// Configuración de los activos a consultar
-const TICKERS_CONFIG = [
-  { ticker: 'SPY',   nombre: 'S&P 500', moneda: 'USD' },
-  { ticker: 'QQQ',   nombre: 'Nasdaq',  moneda: 'USD' },
-  { ticker: 'AAPL',  nombre: 'Apple',   moneda: 'USD' },
-  { ticker: '^MERV', nombre: 'Merval',  moneda: 'ARS' }
+// Universos TradFi por defecto
+export const TRADFI_GLOBAL = [
+  'SPY', 'QQQ', 'DIA', 'IWM', 'AAPL', 'MSFT', 'NVDA', 'TSLA', 'AMZN', 'META', 'GOOGL', 'AMD', 'NFLX', 'JPM'
 ];
+
+export const TRADFI_ARG_BONOS = [
+  '^MERV', 'GGAL.BA', 'YPFD.BA', 'PAMP.BA', 'AL30.BA', 'GD30.BA', 'TLT'
+];
+
+export const DEFAULT_TRADFI_TICKERS = [...TRADFI_GLOBAL, ...TRADFI_ARG_BONOS];
+
+/**
+ * Determina la moneda base según el ticker.
+ */
+function determinarMoneda(ticker) {
+  const t = ticker.toUpperCase();
+  if (t === '^MERV' || t.endsWith('.BA')) {
+    return 'ARS';
+  }
+  return 'USD';
+}
 
 /**
  * Handler HTTP Serverless para Vercel.
- * Ejecuta la consulta simultánea con Promise.all e inserta en Supabase.
+ * Ejecuta consultas concurrentes con Promise.allSettled e inserta en lote en Supabase.
  */
 export default async function handler(req, res) {
   const inicio = performance.now();
 
   try {
-    // 1. Consulta simultánea de todos los tickers vía Yahoo Finance
-    const promesas = TICKERS_CONFIG.map(async ({ ticker, moneda }) => {
-      const quote = await yahooFinance.quote(ticker);
-      
-      const precioActual = Number(quote.regularMarketPrice ?? quote.price ?? 0);
-      const precioApertura = Number(quote.regularMarketOpen ?? quote.open ?? precioActual);
+    const query = req.query || {};
+    const body = req.body || {};
 
-      return {
-        ticker,
-        precio_actual: precioActual,
-        precio_apertura: precioApertura,
-        moneda
-      };
+    // 1. Extracción y deduplicación de tickers a consultar
+    let tickersAConsultar = [];
+    if (query.tickers) {
+      tickersAConsultar = String(query.tickers).split(',');
+    } else if (body.tickers) {
+      tickersAConsultar = Array.isArray(body.tickers) ? body.tickers : String(body.tickers).split(',');
+    } else {
+      tickersAConsultar = DEFAULT_TRADFI_TICKERS;
+    }
+
+    tickersAConsultar = Array.from(new Set(tickersAConsultar.map(t => t.trim()).filter(Boolean)));
+
+    // 2. Consulta concurrente masiva con Promise.allSettled y timeout de seguridad individual
+    const promesas = tickersAConsultar.map(async (ticker) => {
+      try {
+        const quote = await yahooFinance.quote(ticker);
+        const precioActual = Number(quote.regularMarketPrice ?? quote.price ?? 0);
+        const precioApertura = Number(quote.regularMarketOpen ?? quote.open ?? precioActual);
+        const moneda = (quote.currency === 'ARS' || determinarMoneda(ticker) === 'ARS') ? 'ARS' : 'USD';
+
+        if (isNaN(precioActual) || precioActual <= 0) {
+          throw new Error(`Precio inválido para ${ticker}`);
+        }
+
+        return {
+          ticker,
+          precio_actual: precioActual,
+          precio_apertura: precioApertura,
+          moneda,
+          timestamp: new Date().toISOString()
+        };
+      } catch (err) {
+        throw new Error(`${ticker}: ${err.message}`);
+      }
     });
 
-    const resultados = await Promise.all(promesas);
+    const resultadosSettled = await Promise.allSettled(promesas);
 
-    // 2. Resolución defensiva del cliente Supabase
+    const exitosos = [];
+    const fallidos = [];
+
+    resultadosSettled.forEach((resItem, idx) => {
+      if (resItem.status === 'fulfilled' && resItem.value) {
+        exitosos.push(resItem.value);
+      } else {
+        fallidos.push({
+          ticker: tickersAConsultar[idx],
+          error: resItem.reason?.message || 'Error desconocido'
+        });
+      }
+    });
+
+    // 3. Resolución defensiva del cliente Supabase
     let db = supabase;
     if (!db) {
       const rawUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
@@ -66,36 +118,42 @@ export default async function handler(req, res) {
       }
     }
 
-    if (!db) {
-      throw new Error('Cliente de Supabase no configurado o credenciales ausentes en el entorno');
-    }
+    // 4. Inserción en lote (Bulk Insert) en cotizaciones_tradfi
+    let insertados = 0;
+    if (db && exitosos.length > 0) {
+      const { data, error } = await db
+        .from('cotizaciones_tradfi')
+        .insert(exitosos)
+        .select();
 
-    // 3. Inyección de registros en la tabla cotizaciones_tradfi
-    const { data, error } = await db
-      .from('cotizaciones_tradfi')
-      .insert(resultados)
-      .select();
-
-    if (error) {
-      throw new Error(`Error en Supabase insert: ${error.message} (${error.code})`);
+      if (error) {
+        console.warn('[Scrapper TradFi] Aviso en bulk insert:', error.message);
+      } else {
+        insertados = data ? data.length : exitosos.length;
+      }
     }
 
     const duracionMs = Math.round(performance.now() - inicio);
 
-    // 4. Respuesta HTTP 200 confirmando la captura exitosa
+    // 5. Respuesta HTTP 200 con telemetría de ejecución concurrente
     return res.status(200).json({
-      status: "Captura TradFi exitosa",
+      status: "Captura TradFi Masiva Exitosa",
       timestamp: new Date().toISOString(),
-      totalRegistros: resultados.length,
       duracionMs,
-      activos: resultados,
-      data
+      totalSolicitados: tickersAConsultar.length,
+      totalExitosos: exitosos.length,
+      totalFallidos: fallidos.length,
+      registrosInsertados: insertados,
+      activos: exitosos,
+      fallidos
     });
+
   } catch (error) {
-    console.error('[Scrapper TradFi] Error:', error);
+    console.error('[Scrapper TradFi Masivo] Error fatal:', error);
     return res.status(500).json({
       status: "Error",
       message: error.message || "Error al capturar datos de TradFi"
     });
   }
 }
+

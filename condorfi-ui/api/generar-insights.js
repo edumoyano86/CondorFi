@@ -1,22 +1,18 @@
 /**
  * ==============================================================================
- * CondorFi - Motor de Insights y Detección de Anomalías Multimercado
+ * CondorFi - Motor Quant Institucional y Screener Multimercado
  * Archivo: condorfi-ui/api/generar-insights.js
  * 
  * Serverless Function para Vercel:
- * Soporta dinámicamente dos mercados vía query params:
- *   - ?mercado=cripto&moneda=USDT (por defecto)
- *   - ?mercado=tradfi&ticker=SPY (acciones e índices)
+ * Procesa activos individuales o lotes (batch) para TradFi y Cripto.
  * 
- * Reglas Estadísticas:
- * 1. Cripto:
- *    - SMA y Desviación Estándar (σ) calculados sobre el SPREAD en 'cotizaciones_historicas'.
- *    - Alerta 'OPORTUNIDAD_ALTA' si: Spread > 1.0% Y Spread > SMA + 1.5*σ.
- * 2. TradFi:
- *    - SMA y Desviación Estándar (σ) calculados sobre PRECIO_ACTUAL en 'cotizaciones_tradfi'.
- *    - Alerta 'VOLATILIDAD_EXTREMA' si: |Variación vs Apertura| > 2.0% Y Precio rompe (SMA ± 2*σ).
- * 
- * Si se detecta anomalía, la persiste en 'alertas_mercado' y responde con HTTP 200.
+ * Modelos Matemáticos Cuantitativos:
+ * 1. RSI (Relative Strength Index) de 14 períodos (Wilder's Smoothing).
+ * 2. MACD (Moving Average Convergence Divergence) [12, 26, 9].
+ * 3. Bandas de Bollinger [SMA(20), ±2σ] con %B y Bandwidth.
+ * 4. CondorScore Cuantitativo (0 a 100) y Dictamen Institucional:
+ *    ['STRONG_BUY', 'BUY', 'HOLD', 'SELL', 'STRONG_SELL'].
+ * 5. Persistencia selectiva en 'alertas_mercado'.
  * ==============================================================================
  */
 
@@ -28,12 +24,77 @@ if (!globalThis.WebSocket) {
   globalThis.WebSocket = class DummyWebSocket {};
 }
 
+export const TOP_CRIPTO = [
+  'USDT', 'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'AVAX', 'DOGE', 'LINK',
+  'DOT', 'MATIC', 'SHIB', 'LTC', 'UNI', 'ATOM', 'NEAR', 'ARB', 'OP', 'INJ'
+];
+
+export const TRADFI_GLOBAL = [
+  'SPY', 'QQQ', 'DIA', 'IWM', 'AAPL', 'MSFT', 'NVDA', 'TSLA', 'AMZN', 'META', 'GOOGL', 'AMD', 'NFLX', 'JPM'
+];
+
+export const TRADFI_ARG_BONOS = [
+  '^MERV', 'GGAL.BA', 'YPFD.BA', 'PAMP.BA', 'AL30.BA', 'GD30.BA', 'TLT'
+];
+
+export const UNIVERSO_COMPLETO = [...TRADFI_GLOBAL, ...TRADFI_ARG_BONOS, ...TOP_CRIPTO];
+
+// Catálogo de metadatos de referencia institucional
+const ASSETS_METADATA = {
+  // TradFi Global: Índices y Tech
+  SPY:     { nombre: 'S&P 500 ETF Trust',             mercado: 'NYSE Arca', tipo: 'tradfi', baseMoneda: 'USD' },
+  QQQ:     { nombre: 'Invesco QQQ (Nasdaq 100)',       mercado: 'NASDAQ',    tipo: 'tradfi', baseMoneda: 'USD' },
+  DIA:     { nombre: 'SPDR Dow Jones Industrial',      mercado: 'NYSE Arca', tipo: 'tradfi', baseMoneda: 'USD' },
+  IWM:     { nombre: 'iShares Russell 2000 ETF',       mercado: 'NYSE Arca', tipo: 'tradfi', baseMoneda: 'USD' },
+  AAPL:    { nombre: 'Apple Inc.',                     mercado: 'NASDAQ',    tipo: 'tradfi', baseMoneda: 'USD' },
+  MSFT:    { nombre: 'Microsoft Corporation',          mercado: 'NASDAQ',    tipo: 'tradfi', baseMoneda: 'USD' },
+  NVDA:    { nombre: 'NVIDIA Corporation',             mercado: 'NASDAQ',    tipo: 'tradfi', baseMoneda: 'USD' },
+  TSLA:    { nombre: 'Tesla Inc.',                     mercado: 'NASDAQ',    tipo: 'tradfi', baseMoneda: 'USD' },
+  AMZN:    { nombre: 'Amazon.com Inc.',                mercado: 'NASDAQ',    tipo: 'tradfi', baseMoneda: 'USD' },
+  META:    { nombre: 'Meta Platforms Inc.',            mercado: 'NASDAQ',    tipo: 'tradfi', baseMoneda: 'USD' },
+  GOOGL:   { nombre: 'Alphabet Inc. (Google)',         mercado: 'NASDAQ',    tipo: 'tradfi', baseMoneda: 'USD' },
+  AMD:     { nombre: 'Advanced Micro Devices',         mercado: 'NASDAQ',    tipo: 'tradfi', baseMoneda: 'USD' },
+  NFLX:    { nombre: 'Netflix Inc.',                   mercado: 'NASDAQ',    tipo: 'tradfi', baseMoneda: 'USD' },
+  JPM:     { nombre: 'JPMorgan Chase & Co.',           mercado: 'NYSE',      tipo: 'tradfi', baseMoneda: 'USD' },
+
+  // TradFi Argentina & Renta Fija
+  '^MERV':   { nombre: 'S&P Merval Argentina',         mercado: 'BYMA',      tipo: 'tradfi', baseMoneda: 'ARS' },
+  'GGAL.BA': { nombre: 'Grupo Financiero Galicia',     mercado: 'BYMA',      tipo: 'tradfi', baseMoneda: 'ARS' },
+  'YPFD.BA': { nombre: 'YPF Sociedad Anónima',         mercado: 'BYMA',      tipo: 'tradfi', baseMoneda: 'ARS' },
+  'PAMP.BA': { nombre: 'Pampa Energía S.A.',           mercado: 'BYMA',      tipo: 'tradfi', baseMoneda: 'ARS' },
+  'AL30.BA': { nombre: 'Bono Bonar 2030 Ley Arg',      mercado: 'BYMA',      tipo: 'tradfi', baseMoneda: 'ARS' },
+  'GD30.BA': { nombre: 'Bono Global 2030 Ley NY',      mercado: 'BYMA',      tipo: 'tradfi', baseMoneda: 'ARS' },
+  TLT:       { nombre: 'iShares 20+ Year Treasury ETF', mercado: 'NASDAQ',    tipo: 'tradfi', baseMoneda: 'USD' },
+
+  // Top Criptoactivos
+  USDT:    { nombre: 'Tether USD',                    mercado: 'Cripto ARS', tipo: 'cripto', baseMoneda: 'ARS' },
+  BTC:     { nombre: 'Bitcoin',                       mercado: 'Cripto ARS', tipo: 'cripto', baseMoneda: 'ARS' },
+  ETH:     { nombre: 'Ethereum',                      mercado: 'Cripto ARS', tipo: 'cripto', baseMoneda: 'ARS' },
+  SOL:     { nombre: 'Solana',                        mercado: 'Cripto ARS', tipo: 'cripto', baseMoneda: 'ARS' },
+  BNB:     { nombre: 'BNB Chain',                     mercado: 'Cripto ARS', tipo: 'cripto', baseMoneda: 'ARS' },
+  XRP:     { nombre: 'XRP (Ripple)',                  mercado: 'Cripto ARS', tipo: 'cripto', baseMoneda: 'ARS' },
+  ADA:     { nombre: 'Cardano',                       mercado: 'Cripto ARS', tipo: 'cripto', baseMoneda: 'ARS' },
+  AVAX:    { nombre: 'Avalanche',                     mercado: 'Cripto ARS', tipo: 'cripto', baseMoneda: 'ARS' },
+  DOGE:    { nombre: 'Dogecoin',                      mercado: 'Cripto ARS', tipo: 'cripto', baseMoneda: 'ARS' },
+  LINK:    { nombre: 'Chainlink',                     mercado: 'Cripto ARS', tipo: 'cripto', baseMoneda: 'ARS' },
+  DOT:     { nombre: 'Polkadot',                      mercado: 'Cripto ARS', tipo: 'cripto', baseMoneda: 'ARS' },
+  MATIC:   { nombre: 'Polygon (MATIC)',               mercado: 'Cripto ARS', tipo: 'cripto', baseMoneda: 'ARS' },
+  SHIB:    { nombre: 'Shiba Inu',                     mercado: 'Cripto ARS', tipo: 'cripto', baseMoneda: 'ARS' },
+  LTC:     { nombre: 'Litecoin',                      mercado: 'Cripto ARS', tipo: 'cripto', baseMoneda: 'ARS' },
+  UNI:     { nombre: 'Uniswap',                       mercado: 'Cripto ARS', tipo: 'cripto', baseMoneda: 'ARS' },
+  ATOM:    { nombre: 'Cosmos',                        mercado: 'Cripto ARS', tipo: 'cripto', baseMoneda: 'ARS' },
+  NEAR:    { nombre: 'NEAR Protocol',                 mercado: 'Cripto ARS', tipo: 'cripto', baseMoneda: 'ARS' },
+  ARB:     { nombre: 'Arbitrum',                      mercado: 'Cripto ARS', tipo: 'cripto', baseMoneda: 'ARS' },
+  OP:      { nombre: 'Optimism',                      mercado: 'Cripto ARS', tipo: 'cripto', baseMoneda: 'ARS' },
+  INJ:     { nombre: 'Injective Protocol',            mercado: 'Cripto ARS', tipo: 'cripto', baseMoneda: 'ARS' },
+  USDC:    { nombre: 'USD Coin',                      mercado: 'Cripto ARS', tipo: 'cripto', baseMoneda: 'ARS' }
+};
+
+
 /**
  * Calcula la Media Móvil Simple (SMA) de un array numérico.
- * @param {number[]} valores 
- * @returns {number}
  */
-function calcularSMA(valores) {
+export function calcularSMA(valores) {
   if (!valores || valores.length === 0) return 0;
   const suma = valores.reduce((acc, val) => acc + val, 0);
   return suma / valores.length;
@@ -41,11 +102,8 @@ function calcularSMA(valores) {
 
 /**
  * Calcula la Desviación Estándar poblacional (σ) de un array numérico.
- * @param {number[]} valores 
- * @param {number} sma 
- * @returns {number}
  */
-function calcularDesviacionEstandar(valores, sma) {
+export function calcularDesviacionEstandar(valores, sma) {
   if (!valores || valores.length === 0) return 0;
   const media = typeof sma === 'number' ? sma : calcularSMA(valores);
   const sumaDiferenciasCuadradas = valores.reduce((acc, val) => acc + Math.pow(val - media, 2), 0);
@@ -53,20 +111,411 @@ function calcularDesviacionEstandar(valores, sma) {
 }
 
 /**
- * Extrae o calcula el spread porcentual de un registro cripto.
- * @param {object} registro 
- * @returns {number}
+ * Calcula el RSI (Relative Strength Index) con período estándar de 14.
+ * Recibe array de precios cronológicos [antiguo -> reciente].
  */
-function extraerSpread(registro) {
-  if (typeof registro.spread === 'number' && !isNaN(registro.spread)) {
-    return Number(registro.spread);
+export function calcularRSI(precios, periodo = 14) {
+  if (!precios || precios.length < 2) return 50.0;
+
+  const deltas = [];
+  for (let i = 1; i < precios.length; i++) {
+    deltas.push(precios[i] - precios[i - 1]);
   }
-  const compra = Number(registro.precio_compra) || 0;
-  const venta = Number(registro.precio_venta) || 0;
-  if (compra > 0 && venta > 0) {
-    return Number((((venta - compra) / compra) * 100).toFixed(4));
+
+  const n = Math.min(deltas.length, periodo);
+  let gainSum = 0;
+  let lossSum = 0;
+
+  for (let i = 0; i < n; i++) {
+    if (deltas[i] > 0) gainSum += deltas[i];
+    else lossSum += Math.abs(deltas[i]);
   }
-  return 0;
+
+  let avgGain = gainSum / (n || 1);
+  let avgLoss = lossSum / (n || 1);
+
+  // Alisado exponencial de Wilder para el resto de la serie
+  for (let i = n; i < deltas.length; i++) {
+    const diff = deltas[i];
+    const gain = diff > 0 ? diff : 0;
+    const loss = diff < 0 ? Math.abs(diff) : 0;
+    avgGain = (avgGain * (periodo - 1) + gain) / periodo;
+    avgLoss = (avgLoss * (periodo - 1) + loss) / periodo;
+  }
+
+  if (avgLoss === 0 && avgGain === 0) return 50.0;
+  if (avgLoss === 0) return 100.0;
+  if (avgGain === 0) return 0.0;
+
+  const rs = avgGain / avgLoss;
+  const rsi = 100 - (100 / (1 + rs));
+  return Number(Math.max(0, Math.min(100, rsi)).toFixed(2));
+}
+
+/**
+ * Calcula EMA (Exponential Moving Average) sobre una serie de precios.
+ */
+export function calcularEMA(precios, periodo) {
+  if (!precios || precios.length === 0) return [];
+  const k = 2 / (periodo + 1);
+  const emaArray = [precios[0]];
+  for (let i = 1; i < precios.length; i++) {
+    const ema = precios[i] * k + emaArray[i - 1] * (1 - k);
+    emaArray.push(ema);
+  }
+  return emaArray;
+}
+
+/**
+ * Calcula MACD (12, 26, 9) sobre una serie de precios cronológicos.
+ */
+export function calcularMACD(precios, fast = 12, slow = 26, signalPeriod = 9) {
+  if (!precios || precios.length === 0) {
+    return { macd: 0, signal: 0, histogram: 0, trend: 'NEUTRAL', cruceAlcista: false, cruceBajista: false };
+  }
+
+  const emaFast = calcularEMA(precios, fast);
+  const emaSlow = calcularEMA(precios, slow);
+
+  const macdLine = [];
+  for (let i = 0; i < precios.length; i++) {
+    macdLine.push(emaFast[i] - emaSlow[i]);
+  }
+
+  const signalLine = calcularEMA(macdLine, signalPeriod);
+
+  const ultimoIndex = precios.length - 1;
+  const ultimoMACD = macdLine[ultimoIndex] || 0;
+  const ultimoSignal = signalLine[ultimoIndex] || 0;
+  const ultimoHistogram = ultimoMACD - ultimoSignal;
+
+  const prevIndex = Math.max(0, ultimoIndex - 1);
+  const prevHistogram = (macdLine[prevIndex] || 0) - (signalLine[prevIndex] || 0);
+
+  const cruceAlcista = prevHistogram <= 0 && ultimoHistogram > 0;
+  const cruceBajista = prevHistogram >= 0 && ultimoHistogram < 0;
+  const trend = ultimoHistogram > 0 ? 'BULLISH' : ultimoHistogram < 0 ? 'BEARISH' : 'NEUTRAL';
+
+  return {
+    macd: Number(ultimoMACD.toFixed(4)),
+    signal: Number(ultimoSignal.toFixed(4)),
+    histogram: Number(ultimoHistogram.toFixed(4)),
+    trend,
+    cruceAlcista,
+    cruceBajista
+  };
+}
+
+/**
+ * Calcula Bandas de Bollinger [SMA(20), ±2σ] con %B y Bandwidth.
+ */
+export function calcularBandasBollinger(precios, periodo = 20, numDesvios = 2) {
+  if (!precios || precios.length === 0) {
+    return { middle: 0, upper: 0, lower: 0, percentB: 0.5, bandwidth: 0, stdDev: 0 };
+  }
+
+  const slice = precios.slice(-periodo);
+  const sma = slice.reduce((a, b) => a + b, 0) / slice.length;
+
+  const varianza = slice.reduce((acc, p) => acc + Math.pow(p - sma, 2), 0) / slice.length;
+  const stdDev = Math.sqrt(varianza);
+
+  const upper = sma + (numDesvios * stdDev);
+  const lower = sma - (numDesvios * stdDev);
+
+  const precioActual = slice[slice.length - 1];
+  const rango = upper - lower;
+  const percentB = rango > 0 ? (precioActual - lower) / rango : 0.5;
+  const bandwidth = sma > 0 ? ((upper - lower) / sma) * 100 : 0;
+
+  return {
+    middle: Number(sma.toFixed(4)),
+    upper: Number(upper.toFixed(4)),
+    lower: Number(lower.toFixed(4)),
+    percentB: Number(percentB.toFixed(4)),
+    bandwidth: Number(bandwidth.toFixed(2)),
+    stdDev: Number(stdDev.toFixed(4))
+  };
+}
+
+/**
+ * Motor de Scoring Cuantitativo CondorScore (0 a 100) y Dictamen Institucional.
+ * 
+ * Reglas de ponderación:
+ * 1. RSI (< 30 sobreventa suma +28 a +35 pts; > 70 sobrecompra resta -28 a -35 pts).
+ * 2. Bandas de Bollinger (%B <= 0 toca banda inferior suma +25 a +30 pts; %B >= 1.0 resta -30 pts).
+ * 3. MACD (Cruce alcista suma +25 pts; histograma positivo suma +15 pts; cruce bajista resta -25 pts).
+ */
+export function calcularCondorScore({ rsi, bollinger, macd }) {
+  let score = 50; // Punto neutral base
+
+  // 1. Evaluación RSI
+  if (rsi < 25) {
+    score += 35; // Sobreventa extrema
+  } else if (rsi < 30) {
+    score += 28; // Sobreventa
+  } else if (rsi < 42) {
+    score += 14; // Acumulación / rebote
+  } else if (rsi > 75) {
+    score -= 35; // Sobrecompra extrema
+  } else if (rsi > 70) {
+    score -= 28; // Sobrecompra
+  } else if (rsi > 60) {
+    score -= 10;
+  }
+
+  // 2. Evaluación Bandas de Bollinger
+  if (bollinger.percentB <= 0) {
+    score += 30; // Ruptura de banda inferior (Mean Reversion)
+  } else if (bollinger.percentB <= 0.20) {
+    score += 20; // Zona de soporte inferior
+  } else if (bollinger.percentB >= 1.0) {
+    score -= 30; // Ruptura de banda superior (Sobreextensión)
+  } else if (bollinger.percentB >= 0.80) {
+    score -= 18; // Resistencia de banda superior
+  }
+
+  // 3. Evaluación MACD & Momentum
+  if (macd.cruceAlcista) {
+    score += 25; // Golden cross de momentum
+  } else if (macd.histogram > 0 && macd.trend === 'BULLISH') {
+    score += 15; // Momentum comprador
+  } else if (macd.cruceBajista) {
+    score -= 25; // Death cross de momentum
+  } else if (macd.histogram < 0 && macd.trend === 'BEARISH') {
+    score -= 15; // Momentum vendedor
+  }
+
+  // Bounding estricto [0, 100]
+  const finalScore = Math.round(Math.max(0, Math.min(100, score)));
+
+  // Dictamen Institucional
+  let dictamen = 'HOLD';
+  if (finalScore >= 80) dictamen = 'STRONG_BUY';
+  else if (finalScore >= 62) dictamen = 'BUY';
+  else if (finalScore <= 20) dictamen = 'STRONG_SELL';
+  else if (finalScore <= 38) dictamen = 'SELL';
+
+  return {
+    condorScore: finalScore,
+    dictamen
+  };
+}
+
+/**
+ * Normaliza y extrae un array de tickers o monedas de la query o body.
+ */
+function extraerListaActivos(req, defaultMercado) {
+  const query = req.query || {};
+  const body = req.body || {};
+
+  let items = [];
+
+  if (body.tickers && Array.isArray(body.tickers)) items.push(...body.tickers);
+  else if (typeof body.tickers === 'string') items.push(...body.tickers.split(','));
+
+  if (body.monedas && Array.isArray(body.monedas)) items.push(...body.monedas);
+  else if (typeof body.monedas === 'string') items.push(...body.monedas.split(','));
+
+  if (query.tickers) {
+    items.push(...String(query.tickers).split(','));
+  }
+  if (query.monedas) {
+    items.push(...String(query.monedas).split(','));
+  }
+  if (query.ticker) items.push(String(query.ticker));
+  if (query.moneda) items.push(String(query.moneda));
+
+  items = items.map(s => s.trim().toUpperCase()).filter(Boolean);
+
+  if (items.length === 0) {
+    if (defaultMercado === 'tradfi') {
+      return [...TRADFI_GLOBAL, ...TRADFI_ARG_BONOS];
+    }
+    if (defaultMercado === 'cripto') {
+      return TOP_CRIPTO;
+    }
+    return UNIVERSO_COMPLETO;
+  }
+
+  return Array.from(new Set(items));
+}
+
+/**
+ * Determina si un símbolo corresponde al mercado TradFi.
+ */
+function esActivoTradfi(activo, mercadoParam) {
+  const a = (activo || '').toUpperCase();
+  if (mercadoParam === 'tradfi') return true;
+  if (mercadoParam === 'cripto') return false;
+  if (TRADFI_GLOBAL.includes(a) || TRADFI_ARG_BONOS.includes(a) || a.endsWith('.BA') || a === '^MERV') {
+    return true;
+  }
+  return ASSETS_METADATA[a]?.tipo === 'tradfi';
+}
+
+
+/**
+ * Procesa cuantitativamente un activo TradFi.
+ */
+async function analizarActivoTradfi(db, ticker, limite = 100) {
+  const meta = ASSETS_METADATA[ticker] || {
+    nombre: ticker,
+    mercado: 'TradFi',
+    tipo: 'tradfi',
+    baseMoneda: ticker === '^MERV' ? 'ARS' : 'USD'
+  };
+
+  const { data: registros, error } = await db
+    .from('cotizaciones_tradfi')
+    .select('id, timestamp, ticker, precio_actual, precio_apertura, moneda, maximo_diario, minimo_diario')
+    .eq('ticker', ticker)
+    .order('id', { ascending: false })
+    .limit(limite);
+
+  if (error || !registros || registros.length === 0) {
+    return null;
+  }
+
+  // Invertir a orden cronológico (antiguo -> reciente) para indicadores técnicos
+  const cronologicos = [...registros].reverse();
+
+  const precios = cronologicos.map(r => Number(r.precio_actual)).filter(p => !isNaN(p) && p > 0);
+  const registroReciente = registros[0];
+  const precioActual = Number(registroReciente.precio_actual) || 0;
+  const precioApertura = Number(registroReciente.precio_apertura) || precioActual;
+
+  const variacionApertura = precioApertura > 0
+    ? Number((((precioActual - precioApertura) / precioApertura) * 100).toFixed(2))
+    : 0;
+
+  // Cálculos Cuantitativos
+  const rsi = calcularRSI(precios, 14);
+  const macd = calcularMACD(precios, 12, 26, 9);
+  const bollinger = calcularBandasBollinger(precios, 20, 2);
+
+  const { condorScore, dictamen } = calcularCondorScore({
+    rsi,
+    bollinger,
+    macd,
+    precioActual,
+    variacion24h: variacionApertura
+  });
+
+  // Evaluación de Volatilidad Extrema TradFi (|variación| > 2% Y rompe SMA ± 2σ)
+  const esVolatilidadExtrema = Math.abs(variacionApertura) >= 2.0 &&
+    (precioActual > bollinger.upper || precioActual < bollinger.lower);
+
+  let mensaje = `${ticker}: CondorScore ${condorScore}/100 (${dictamen}). RSI(14): ${rsi}. MACD ${macd.trend} (${macd.histogram > 0 ? '+' : ''}${macd.histogram}).`;
+  if (dictamen === 'STRONG_BUY' || dictamen === 'BUY') {
+    mensaje += ` Setup de compra detectado en zona de descuento (%B: ${bollinger.percentB}).`;
+  } else if (dictamen === 'STRONG_SELL' || dictamen === 'SELL') {
+    mensaje += ` Presión vendedora activa en resistencia (%B: ${bollinger.percentB}).`;
+  }
+
+  return {
+    activo: ticker,
+    nombre: meta.nombre,
+    mercado: meta.mercado,
+    tipoMercado: 'tradfi',
+    moneda: registroReciente.moneda || meta.baseMoneda,
+    precioActual,
+    precioApertura,
+    variacion24h: variacionApertura,
+    condorScore,
+    dictamen,
+    rsi,
+    macd,
+    bollinger,
+    esVolatilidadExtrema,
+    mensaje,
+    totalMuestras: registros.length,
+    timestamp: registroReciente.timestamp || new Date().toISOString()
+  };
+}
+
+/**
+ * Procesa cuantitativamente un activo Cripto.
+ */
+async function analizarActivoCripto(db, moneda, limite = 100) {
+  const meta = ASSETS_METADATA[moneda] || {
+    nombre: moneda,
+    mercado: 'Cripto ARS',
+    tipo: 'cripto',
+    baseMoneda: 'ARS'
+  };
+
+  const { data: registros, error } = await db
+    .from('cotizaciones_historicas')
+    .select('id, timestamp, moneda, exchange, precio_compra, precio_venta, spread, exchange_compra, exchange_venta')
+    .eq('moneda', moneda)
+    .order('timestamp', { ascending: false })
+    .limit(limite);
+
+  if (error || !registros || registros.length === 0) {
+    return null;
+  }
+
+  const cronologicos = [...registros].reverse();
+
+  // Precios medios para la serie técnica
+  const preciosMedios = cronologicos.map(r => {
+    const ask = Number(r.precio_compra) || 0;
+    const bid = Number(r.precio_venta) || 0;
+    return ask > 0 && bid > 0 ? (ask + bid) / 2 : (ask || bid || 0);
+  }).filter(p => p > 0);
+
+  const registroReciente = registros[0];
+  const precioAsk = Number(registroReciente.precio_compra) || 0;
+  const precioBid = Number(registroReciente.precio_venta) || 0;
+  const precioActual = precioAsk > 0 && precioBid > 0 ? (precioAsk + precioBid) / 2 : (precioAsk || precioBid);
+
+  // Spread actual
+  const spreadActual = typeof registroReciente.spread === 'number'
+    ? Number(registroReciente.spread.toFixed(4))
+    : (precioAsk > 0 ? Number((((precioBid - precioAsk) / precioAsk) * 100).toFixed(4)) : 0);
+
+  // Cálculos Cuantitativos
+  const rsi = calcularRSI(preciosMedios, 14);
+  const macd = calcularMACD(preciosMedios, 12, 26, 9);
+  const bollinger = calcularBandasBollinger(preciosMedios, 20, 2);
+
+  const { condorScore, dictamen } = calcularCondorScore({
+    rsi,
+    bollinger,
+    macd,
+    precioActual,
+    variacion24h: spreadActual
+  });
+
+  const exchangeCompra = registroReciente.exchange_compra || (registroReciente.exchange?.split('->')[0]?.trim()) || 'Ex. Compra';
+  const exchangeVenta = registroReciente.exchange_venta || (registroReciente.exchange?.split('->')[1]?.trim()) || 'Ex. Venta';
+
+  let mensaje = `${moneda}/ARS: CondorScore ${condorScore}/100 (${dictamen}). Spread actual: ${spreadActual > 0 ? '+' : ''}${spreadActual.toFixed(2)}%. Compra: ${exchangeCompra} ($${precioAsk}) -> Venta: ${exchangeVenta} ($${precioBid}).`;
+
+  return {
+    activo: moneda,
+    nombre: meta.nombre,
+    mercado: meta.mercado,
+    tipoMercado: 'cripto',
+    moneda: 'ARS',
+    precioActual,
+    precioApertura: precioAsk,
+    precioCompra: precioAsk,
+    precioVenta: precioBid,
+    variacion24h: spreadActual,
+    spreadActual,
+    exchangeCompra,
+    exchangeVenta,
+    condorScore,
+    dictamen,
+    rsi,
+    macd,
+    bollinger,
+    mensaje,
+    totalMuestras: registros.length,
+    timestamp: registroReciente.timestamp || new Date().toISOString()
+  };
 }
 
 /**
@@ -94,263 +543,97 @@ export default async function handler(req, res) {
       });
     }
 
-    // 2. Extracción y normalización de parámetros
-    const mercadoParam = (req.query?.mercado || req.body?.mercado || '').toLowerCase().trim();
-    const tickerParam = (req.query?.ticker || req.body?.ticker || '').toUpperCase().trim();
-    const monedaParam = (req.query?.moneda || req.body?.moneda || '').toUpperCase().trim();
+    // 2. Parámetros de mercado y activos a analizar
+    const query = req.query || {};
+    const body = req.body || {};
+    const mercadoParam = (query.mercado || body.mercado || '').toLowerCase().trim();
 
-    // Detección automática del mercado: 'tradfi' si se solicita explícitamente o si se envía un ticker tradicional
-    const esTradfi = mercadoParam === 'tradfi' || (!mercadoParam && Boolean(tickerParam));
-    const mercado = esTradfi ? 'tradfi' : 'cripto';
-    const limite = 100;
+    const listaActivos = extraerListaActivos(req, mercadoParam);
+    const limiteMuestras = Math.min(100, Math.max(10, parseInt(query.limite || body.limite || 100, 10)));
 
-    let alertaGenerada = null;
-    let guardadoEnDb = false;
-    let errorGuardado = null;
-
-    // =========================================================================
-    // RAMA TRADFI: Análisis de Acciones, ETFs e Índices
-    // =========================================================================
-    if (esTradfi) {
-      const ticker = tickerParam || monedaParam || 'SPY';
-
-      // Consulta a la tabla cotizaciones_tradfi
-      const { data: registros, error: errSelect } = await db
-        .from('cotizaciones_tradfi')
-        .select('id, timestamp, ticker, precio_actual, precio_apertura, moneda, maximo_diario, minimo_diario')
-        .eq('ticker', ticker)
-        .order('id', { ascending: false })
-        .limit(limite);
-
-      if (errSelect) {
-        throw new Error(`Error consultando cotizaciones_tradfi: ${errSelect.message} (${errSelect.code})`);
+    // 3. Procesamiento concurrente masivo de cada activo con Promise.allSettled
+    const promesasAnalisis = listaActivos.map(async (activo) => {
+      const esTradfi = esActivoTradfi(activo, mercadoParam);
+      if (esTradfi) {
+        return await analizarActivoTradfi(db, activo, limiteMuestras);
+      } else {
+        return await analizarActivoCripto(db, activo, limiteMuestras);
       }
+    });
 
-      if (!registros || registros.length === 0) {
-        return res.status(200).json({
-          status: "sin_datos",
-          mercado: "tradfi",
-          ticker,
-          mensaje: `No se encontraron registros de cotizaciones TradFi para el ticker '${ticker}'.`,
-          totalRegistrosAnalizados: 0
-        });
-      }
+    const resultadosSettled = await Promise.allSettled(promesasAnalisis);
 
-      // SMA y Desviación Estándar calculados sobre PRECIO_ACTUAL
-      const precios = registros
-        .map(r => Number(r.precio_actual))
-        .filter(p => !isNaN(p) && p > 0);
+    const screenerResults = [];
+    const alertasParaGuardar = [];
 
-      const sma = calcularSMA(precios);
-      const desviacionEstandar = calcularDesviacionEstandar(precios, sma);
+    resultadosSettled.forEach(item => {
+      if (item.status === 'fulfilled' && item.value) {
+        const resultado = item.value;
+        screenerResults.push(resultado);
 
-      const registroReciente = registros[0];
-      const precioActual = Number(registroReciente.precio_actual) || 0;
-      const precioApertura = Number(registroReciente.precio_apertura) || precioActual;
+        // Si el veredicto es 'STRONG_BUY' o 'STRONG_SELL' o anomalía, preparar alerta estructurada
+        if (resultado.dictamen === 'STRONG_BUY' || resultado.dictamen === 'STRONG_SELL' || resultado.esVolatilidadExtrema) {
+          const tipoAlerta = resultado.esVolatilidadExtrema ? 'VOLATILIDAD_EXTREMA' : resultado.dictamen;
+          const safeSpread = Math.min(999.99, Math.max(-999.99, Number(resultado.variacion24h || 0)));
+          const safeSMA = Math.min(999.99, Math.max(-999.99, Number(resultado.bollinger.percentB ? (resultado.bollinger.percentB * 100) : 50)));
+          const safeStdDev = Math.min(999.99, Math.max(0, Number(resultado.bollinger.bandwidth || resultado.bollinger.stdDev || 0)));
 
-      // Variación respecto a la apertura
-      const variacionAperturaPorcentaje = precioApertura > 0
-        ? Number((((precioActual - precioApertura) / precioApertura) * 100).toFixed(4))
-        : 0;
-
-      // Reglas de anomalía TradFi:
-      // 1. Variación absoluta vs apertura > 2% (caída o subida)
-      // 2. Precio rompe la banda de SMA ± 2 * Desviación Estándar
-      const cumpleVariacionApertura = Math.abs(variacionAperturaPorcentaje) >= 2.0;
-      const bandaSuperior = sma + (2 * desviacionEstandar);
-      const bandaInferior = sma - (2 * desviacionEstandar);
-      const rompeBandasEstadisticas = precioActual > bandaSuperior || precioActual < bandaInferior;
-
-      const esVolatilidadExtrema = cumpleVariacionApertura && rompeBandasEstadisticas;
-
-      if (esVolatilidadExtrema) {
-        const direccion = precioActual > bandaSuperior ? 'por encima' : 'por debajo';
-        const sentido = variacionAperturaPorcentaje >= 0
-          ? `subida del +${variacionAperturaPorcentaje.toFixed(2)}%`
-          : `caída del ${variacionAperturaPorcentaje.toFixed(2)}%`;
-
-        alertaGenerada = {
-          tipo_alerta: 'VOLATILIDAD_EXTREMA',
-          moneda: ticker,
-          spread_actual: Number(variacionAperturaPorcentaje.toFixed(4)),
-          spread_sma: Number(sma.toFixed(4)),
-          desviacion_estandar: Number(desviacionEstandar.toFixed(4)),
-          exchange_compra: 'TradFi Market',
-          exchange_venta: registroReciente.moneda || 'USD',
-          mensaje: `${ticker} cotizando 2 desviaciones estándar ${direccion} de su media móvil (${registroReciente.moneda} $${precioActual.toLocaleString('es-AR')} vs SMA $${sma.toLocaleString('es-AR')}), acumulando ${sentido} respecto a la apertura ($${precioApertura.toLocaleString('es-AR')}).`,
-          timestamp: new Date().toISOString()
-        };
-
-        try {
-          const { error: errInsert } = await db
-            .from('alertas_mercado')
-            .insert([alertaGenerada]);
-
-          if (errInsert) {
-            errorGuardado = `${errInsert.message} (Código: ${errInsert.code})`;
-            console.warn('[Motor Insights TradFi] Aviso al insertar en alertas_mercado:', errorGuardado);
-          } else {
-            guardadoEnDb = true;
-          }
-        } catch (errDb) {
-          errorGuardado = errDb.message;
-          console.warn('[Motor Insights TradFi] Excepción al guardar alerta:', errDb);
+          alertasParaGuardar.push({
+            tipo_alerta: tipoAlerta,
+            moneda: resultado.activo,
+            spread_actual: Number(safeSpread.toFixed(4)),
+            spread_sma: Number(safeSMA.toFixed(4)),
+            desviacion_estandar: Number(safeStdDev.toFixed(4)),
+            exchange_compra: resultado.exchangeCompra || resultado.mercado,
+            exchange_venta: resultado.exchangeVenta || resultado.moneda,
+            mensaje: `[${resultado.dictamen} CondorScore: ${resultado.condorScore}/100] ${resultado.mensaje}`,
+            timestamp: new Date().toISOString()
+          });
         }
       }
+    });
 
-      const duracionMs = Math.round(performance.now() - inicio);
-
-      return res.status(200).json({
-        status: "success",
-        mercado: "tradfi",
-        ticker,
-        timestamp: new Date().toISOString(),
-        duracionMs,
-        totalRegistrosAnalizados: registros.length,
-        metricasMatematicas: {
-          variableAnalizada: "precio_actual",
-          sma: Number(sma.toFixed(4)),
-          desviacionEstandar: Number(desviacionEstandar.toFixed(4)),
-          factorMultiplicador: 2.0,
-          bandaSuperior: Number(bandaSuperior.toFixed(4)),
-          bandaInferior: Number(bandaInferior.toFixed(4)),
-          umbralVariacionMinimaPct: 2.0
-        },
-        ultimoPrecio: {
-          id: registroReciente.id,
-          timestamp: registroReciente.timestamp,
-          ticker: registroReciente.ticker,
-          moneda: registroReciente.moneda,
-          precioActual: Number(precioActual.toFixed(4)),
-          precioApertura: Number(precioApertura.toFixed(4)),
-          variacionAperturaPorcentaje: Number(variacionAperturaPorcentaje.toFixed(2))
-        },
-        evaluacion: {
-          cumpleVariacionApertura,
-          rompeBandasEstadisticas,
-          esVolatilidadExtrema
-        },
-        alerta: alertaGenerada,
-        alertaGuardada: guardadoEnDb,
-        errorGuardado
-      });
-    }
-
-    // =========================================================================
-    // RAMA CRIPTO: Análisis de Spreads y Arbitraje
-    // =========================================================================
-    const moneda = monedaParam || tickerParam || 'USDT';
-
-    const { data: registros, error: errSelect } = await db
-      .from('cotizaciones_historicas')
-      .select('id, timestamp, moneda, exchange, precio_compra, precio_venta, spread, exchange_compra, exchange_venta')
-      .eq('moneda', moneda)
-      .order('timestamp', { ascending: false })
-      .limit(limite);
-
-    if (errSelect) {
-      throw new Error(`Error consultando cotizaciones_historicas: ${errSelect.message} (${errSelect.code})`);
-    }
-
-    if (!registros || registros.length === 0) {
-      return res.status(200).json({
-        status: "sin_datos",
-        mercado: "cripto",
-        moneda,
-        mensaje: `No se encontraron registros históricos para ${moneda} en Supabase.`,
-        totalRegistrosAnalizados: 0
-      });
-    }
-
-    // SMA y Desviación Estándar calculados sobre SPREAD
-    const spreads = registros.map(extraerSpread);
-    const sma = calcularSMA(spreads);
-    const desviacionEstandar = calcularDesviacionEstandar(spreads, sma);
-
-    const registroReciente = registros[0];
-    const spreadActual = extraerSpread(registroReciente);
-    const umbralEstadistico = sma + (1.5 * desviacionEstandar);
-
-    // Regla de decisión Cripto: Spread actual > 1.0% Y Spread actual > (SMA + 1.5 * σ)
-    const cumpleFiltroMinimo = spreadActual > 1.0;
-    const superaUmbralEstadistico = spreadActual > umbralEstadistico;
-    const esOportunidadAlta = cumpleFiltroMinimo && superaUmbralEstadistico;
-
-    if (esOportunidadAlta) {
-      const exchangeCompra = registroReciente.exchange_compra || (registroReciente.exchange?.split('->')[0]?.trim()) || 'Desconocido';
-      const exchangeVenta = registroReciente.exchange_venta || (registroReciente.exchange?.split('->')[1]?.trim()) || 'Desconocido';
-
-      alertaGenerada = {
-        tipo_alerta: 'OPORTUNIDAD_ALTA',
-        moneda,
-        spread_actual: Number(spreadActual.toFixed(4)),
-        spread_sma: Number(sma.toFixed(4)),
-        desviacion_estandar: Number(desviacionEstandar.toFixed(4)),
-        exchange_compra: exchangeCompra,
-        exchange_venta: exchangeVenta,
-        mensaje: `Alerta OPORTUNIDAD_ALTA detectada en ${moneda}: Spread actual de ${spreadActual.toFixed(2)}% supera el umbral estadístico de ${umbralEstadistico.toFixed(2)}% (SMA: ${sma.toFixed(2)}% + 1.5σ: ${(1.5 * desviacionEstandar).toFixed(2)}%). Compra sugerida en ${exchangeCompra} ($${registroReciente.precio_compra}) y venta en ${exchangeVenta} ($${registroReciente.precio_venta}).`,
-        timestamp: new Date().toISOString()
-      };
-
+    // 4. Inserción en lote de alertas institucionales en 'alertas_mercado'
+    let alertasPersistidas = 0;
+    if (alertasParaGuardar.length > 0) {
       try {
-        const { error: errInsert } = await db
+        const { data, error } = await db
           .from('alertas_mercado')
-          .insert([alertaGenerada]);
+          .insert(alertasParaGuardar)
+          .select();
 
-        if (errInsert) {
-          errorGuardado = `${errInsert.message} (Código: ${errInsert.code})`;
-          console.warn('[Motor Insights Cripto] Aviso al insertar en alertas_mercado:', errorGuardado);
+        if (!error) {
+          alertasPersistidas = data ? data.length : alertasParaGuardar.length;
         } else {
-          guardadoEnDb = true;
+          console.warn('[Motor Quant] Aviso RLS o inserción en alertas_mercado:', error.message);
         }
       } catch (errDb) {
-        errorGuardado = errDb.message;
-        console.warn('[Motor Insights Cripto] Excepción al guardar alerta:', errDb);
+        console.warn('[Motor Quant] Excepción al persistir alertas:', errDb.message);
       }
     }
 
     const duracionMs = Math.round(performance.now() - inicio);
 
+    // 5. Ordenamiento institucional por mayor CondorScore por defecto
+    screenerResults.sort((a, b) => b.condorScore - a.condorScore);
+
+    // 6. Respuesta HTTP 200 con formato institucional
     return res.status(200).json({
       status: "success",
-      mercado: "cripto",
-      moneda,
       timestamp: new Date().toISOString(),
       duracionMs,
-      totalRegistrosAnalizados: registros.length,
-      metricasMatematicas: {
-        variableAnalizada: "spread",
-        sma: Number(sma.toFixed(4)),
-        desviacionEstandar: Number(desviacionEstandar.toFixed(4)),
-        factorMultiplicador: 1.5,
-        umbralEstadistico: Number(umbralEstadistico.toFixed(4)),
-        filtroMinimoPorcentual: 1.0
-      },
-      ultimoPrecio: {
-        id: registroReciente.id,
-        timestamp: registroReciente.timestamp,
-        exchange: registroReciente.exchange,
-        exchange_compra: registroReciente.exchange_compra,
-        exchange_venta: registroReciente.exchange_venta,
-        precio_compra: registroReciente.precio_compra,
-        precio_venta: registroReciente.precio_venta,
-        spreadActual: Number(spreadActual.toFixed(4))
-      },
-      evaluacion: {
-        cumpleFiltroMinimo,
-        superaUmbralEstadistico,
-        esOportunidadAlta
-      },
-      alerta: alertaGenerada,
-      alertaGuardada: guardadoEnDb,
-      errorGuardado
+      mercado: mercadoParam || 'multimercado',
+      totalAnalizados: screenerResults.length,
+      alertasGeneradas: alertasParaGuardar.length,
+      alertasPersistidas,
+      screener: screenerResults
     });
 
   } catch (error) {
-    console.error('[Motor de Insights] Error:', error);
+    console.error('[Motor Quant Serverless] Error fatal:', error);
     return res.status(500).json({
       status: "error",
-      message: error.message || "Error interno al generar insights matemáticos"
+      message: error.message || "Error interno en el motor cuantitativo"
     });
   }
 }

@@ -23,7 +23,10 @@ import cron from 'node-cron';
 // Configuración general del enjambre multi-activo
 const CONFIG = {
   TIMEOUT_MS: 7000,
-  ACTIVOS: ['USDT', 'BTC', 'ETH', 'USDC'],
+  ACTIVOS: [
+    'USDT', 'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'AVAX', 'DOGE', 'LINK',
+    'DOT', 'MATIC', 'SHIB', 'LTC', 'UNI', 'ATOM', 'NEAR', 'ARB', 'OP', 'INJ'
+  ],
   TABLA_SUPABASE: 'cotizaciones_historicas',
   CRON_INTERVALO: '*/1 * * * *',
   EXCHANGES: [

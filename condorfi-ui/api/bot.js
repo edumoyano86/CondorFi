@@ -27,10 +27,15 @@ if (!globalThis.WebSocket) {
   globalThis.WebSocket = class DummyWebSocket {};
 }
 
+export const TOP_CRIPTO_DEFAULT = [
+  'USDT', 'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'AVAX', 'DOGE', 'LINK',
+  'DOT', 'MATIC', 'SHIB', 'LTC', 'UNI', 'ATOM', 'NEAR', 'ARB', 'OP', 'INJ'
+];
+
 // Configuración general del enjambre multi-activo y parámetros matemáticos
 const CONFIG = {
-  TIMEOUT_MS: 6000,
-  ACTIVOS: ['USDT', 'BTC', 'ETH'],
+  TIMEOUT_MS: 5000,
+  ACTIVOS: TOP_CRIPTO_DEFAULT,
   TABLA_SUPABASE: 'cotizaciones_historicas',
   // Fricción operativa y comisiones de mercado estimadas (0.5% compra + 0.5% venta = 1.0% total)
   COMISION_COMPRA_PCT: 0.005,
@@ -51,12 +56,20 @@ const CONFIG = {
 
 /**
  * Consulta la API pública de Bitso (v3).
- * Soporta USDT/ARS y BTC/ARS.
+ * Soporta USDT, BTC, ETH, SOL, XRP y altcoins.
  */
 async function consultarBitso(moneda, signal) {
   const mapBooks = {
     USDT: 'usdt_ars',
-    BTC: 'btc_ars'
+    BTC: 'btc_ars',
+    ETH: 'eth_ars',
+    SOL: 'sol_ars',
+    XRP: 'xrp_ars',
+    ADA: 'ada_ars',
+    AVAX: 'avax_ars',
+    DOGE: 'doge_ars',
+    LTC: 'ltc_ars',
+    SHIB: 'shib_ars'
   };
   const book = mapBooks[moneda.toUpperCase()];
   if (!book) return null;
@@ -331,38 +344,59 @@ export default async function handler(req, res) {
   const metricasRecoleccion = {};
 
   try {
-    // Recolectar cotizaciones y calcular spread por cada activo en paralelo
-    const promesasActivos = CONFIG.ACTIVOS.map(async moneda => {
+    const query = req.query || {};
+    const body = req.body || {};
+
+    let monedasAConsultar = [];
+    if (query.monedas) {
+      monedasAConsultar = String(query.monedas).split(',');
+    } else if (query.tickers) {
+      monedasAConsultar = String(query.tickers).split(',');
+    } else if (body.monedas) {
+      monedasAConsultar = Array.isArray(body.monedas) ? body.monedas : String(body.monedas).split(',');
+    } else if (body.tickers) {
+      monedasAConsultar = Array.isArray(body.tickers) ? body.tickers : String(body.tickers).split(',');
+    } else {
+      monedasAConsultar = TOP_CRIPTO_DEFAULT;
+    }
+
+    monedasAConsultar = Array.from(new Set(monedasAConsultar.map(m => m.trim().toUpperCase()).filter(Boolean)));
+
+    // Recolectar cotizaciones y calcular spread por cada activo concurrentemente con Promise.allSettled
+    const promesasActivos = monedasAConsultar.map(async moneda => {
       const cotizaciones = await recolectarCotizacionesParaMoneda(moneda);
       const oportunidad = calcularSpread(cotizaciones, moneda);
       return { moneda, cotizaciones, oportunidad };
     });
 
-    const resultados = await Promise.all(promesasActivos);
+    const resultadosSettled = await Promise.allSettled(promesasActivos);
 
-    for (const { moneda, cotizaciones, oportunidad } of resultados) {
-      metricasRecoleccion[moneda] = {
-        totalExchangesConsultados: cotizaciones.length
-      };
+    resultadosSettled.forEach(item => {
+      if (item.status === 'fulfilled' && item.value) {
+        const { moneda, cotizaciones, oportunidad } = item.value;
+        metricasRecoleccion[moneda] = {
+          totalExchangesConsultados: cotizaciones.length
+        };
 
-      if (oportunidad) {
-        resumenOportunidades[moneda] = oportunidad;
+        if (oportunidad) {
+          resumenOportunidades[moneda] = oportunidad;
 
-        // Objeto enriquecido con spread, exchange_compra y exchange_venta para Supabase
-        oportunidadesParaInsertar.push({
-          timestamp: oportunidad.timestamp,
-          moneda: oportunidad.moneda,
-          exchange: `${oportunidad.exchange_compra} -> ${oportunidad.exchange_venta}`,
-          exchange_compra: oportunidad.exchange_compra,
-          exchange_venta: oportunidad.exchange_venta,
-          precio_compra: oportunidad.precio_compra,
-          precio_venta: oportunidad.precio_venta,
-          spread: oportunidad.spread
-        });
+          // Objeto enriquecido con spread, exchange_compra y exchange_venta para Supabase
+          oportunidadesParaInsertar.push({
+            timestamp: oportunidad.timestamp,
+            moneda: oportunidad.moneda,
+            exchange: `${oportunidad.exchange_compra} -> ${oportunidad.exchange_venta}`,
+            exchange_compra: oportunidad.exchange_compra,
+            exchange_venta: oportunidad.exchange_venta,
+            precio_compra: oportunidad.precio_compra,
+            precio_venta: oportunidad.precio_venta,
+            spread: oportunidad.spread
+          });
+        }
       }
-    }
+    });
 
-    // Inserción en Supabase si las credenciales están configuradas
+    // Inserción en lote (Bulk Insert) en Supabase en una sola operación
     let registrosInsertados = 0;
     if (supabaseUrl && supabaseKey && oportunidadesParaInsertar.length > 0) {
       const supabase = createClient(supabaseUrl, supabaseKey);
@@ -374,7 +408,7 @@ export default async function handler(req, res) {
 
       // Fallback defensivo si la tabla aún no cuenta con las columnas spread / exchange_compra / exchange_venta
       if (error && (error.code === 'PGRST204' || error.code === '42703')) {
-        console.warn('[Supabase] Columnas avanzadas (spread, exchange_compra, exchange_venta) no encontradas en el esquema de Supabase. Aplicando guardado compatible en "exchange"...');
+        console.warn('[Supabase] Columnas avanzadas no encontradas en el esquema. Aplicando guardado compatible en "exchange"...');
         const fallbackRegistros = oportunidadesParaInsertar.map(op => ({
           timestamp: op.timestamp,
           moneda: op.moneda,
@@ -388,27 +422,26 @@ export default async function handler(req, res) {
           .insert(fallbackRegistros)
           .select();
 
-        if (fallbackRes.error) {
-          throw new Error(`Error en Supabase insert fallback: ${fallbackRes.error.message} (${fallbackRes.error.code})`);
+        if (!fallbackRes.error) {
+          data = fallbackRes.data;
+          error = null;
         }
-        data = fallbackRes.data;
-        error = null;
-      } else if (error) {
-        throw new Error(`Error en Supabase insert: ${error.message} (${error.code})`);
       }
 
-      registrosInsertados = data ? data.length : oportunidadesParaInsertar.length;
+      if (!error && data) {
+        registrosInsertados = data.length;
+      }
     }
 
     const duracionMs = Math.round(performance.now() - inicio);
 
     return res.status(200).json({
-      status: "Arbitraje y cálculo de spread ejecutado",
+      status: "Arbitraje Cripto Masivo Concurrente Ejecutado",
       timestamp: new Date().toISOString(),
-      activos: CONFIG.ACTIVOS,
+      duracionMs,
+      totalSolicitados: monedasAConsultar.length,
       oportunidadesCalculadas: oportunidadesParaInsertar.length,
       registrosInsertados,
-      duracionMs,
       oportunidades: resumenOportunidades,
       metricasRecoleccion
     });

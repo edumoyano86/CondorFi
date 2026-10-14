@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import condorLogo from './assets/condorfi-logo.png';
 import { supabase } from './lib/supabase';
+import TradFiCandlestickChart from './components/TradFiCandlestickChart';
+import ScreenerDataGrid from './components/ScreenerDataGrid';
 import {
   Activity,
   Zap,
@@ -206,6 +208,285 @@ const EXCHANGES_CONFIG = [
   { id: 'node-decrypto',     nombre: 'Decrypto',      clave: 'decrypto',     rol: 'Mesa de Dinero OTC' }
 ];
 
+// Datos iniciales institucionales para el Screener DataGrid Cuantitativo
+const DATOS_SCREENER_INICIAL = [
+  {
+    activo: 'SPY',
+    nombre: 'S&P 500 ETF Trust',
+    mercado: 'NYSE Arca',
+    tipoMercado: 'tradfi',
+    moneda: 'USD',
+    precioActual: 777.26,
+    precioApertura: 777.34,
+    variacion24h: -0.01,
+    condorScore: 82,
+    dictamen: 'STRONG_BUY',
+    rsi: 28.4,
+    macd: { macd: 0.14, signal: 0.08, histogram: 0.06, cruceAlcista: true, cruceBajista: false },
+    bollinger: { sma: 777.10, upper: 778.50, lower: 775.70, bandwidth: 0.36, percentB: 0.12, tocaInferior: true, tocaSuperior: false },
+    mensaje: 'RSI en sobreventa institucional (28.4) y precio testeando banda inferior de Bollinger.'
+  },
+  {
+    activo: 'BTC',
+    nombre: 'Bitcoin',
+    mercado: 'Mercado Cripto ARS',
+    tipoMercado: 'cripto',
+    moneda: 'ARS',
+    precioActual: 134850000,
+    precioApertura: 134200000,
+    variacion24h: 1.25,
+    spreadActual: 1.25,
+    exchangeCompra: 'Fiwind',
+    exchangeVenta: 'Binance P2P',
+    condorScore: 78,
+    dictamen: 'BUY',
+    rsi: 38.2,
+    macd: { macd: 45000, signal: 21000, histogram: 24000, cruceAlcista: true, cruceBajista: false },
+    bollinger: { sma: 134500000, upper: 136000000, lower: 133000000, bandwidth: 2.23, percentB: 0.35, tocaInferior: false, tocaSuperior: false },
+    mensaje: 'Spread de arbitraje neto positivo (1.25%) con cruce de momentum alcista en MACD.'
+  },
+  {
+    activo: 'QQQ',
+    nombre: 'Invesco QQQ (Nasdaq 100)',
+    mercado: 'NASDAQ',
+    tipoMercado: 'tradfi',
+    moneda: 'USD',
+    precioActual: 743.01,
+    precioApertura: 739.53,
+    variacion24h: 0.47,
+    condorScore: 68,
+    dictamen: 'BUY',
+    rsi: 44.1,
+    macd: { macd: 0.28, signal: 0.19, histogram: 0.09, cruceAlcista: true, cruceBajista: false },
+    bollinger: { sma: 741.20, upper: 745.80, lower: 736.60, bandwidth: 1.24, percentB: 0.69, tocaInferior: false, tocaSuperior: false },
+    mensaje: 'MACD en expansión positiva con precio operando sobre la SMA 20.'
+  },
+  {
+    activo: 'USDT',
+    nombre: 'Tether USD',
+    mercado: 'Mercado Cripto ARS',
+    tipoMercado: 'cripto',
+    moneda: 'ARS',
+    precioActual: 1612,
+    precioApertura: 1610,
+    variacion24h: 0.85,
+    spreadActual: 0.85,
+    exchangeCompra: 'Lemon Cash',
+    exchangeVenta: 'Fiwind',
+    condorScore: 55,
+    dictamen: 'HOLD',
+    rsi: 51.3,
+    macd: { macd: 0.8, signal: 0.6, histogram: 0.2, cruceAlcista: false, cruceBajista: false },
+    bollinger: { sma: 1611, upper: 1618, lower: 1604, bandwidth: 0.87, percentB: 0.57, tocaInferior: false, tocaSuperior: false },
+    mensaje: 'Cotización lateral dentro de bandas normales sin quiebre estadístico significativo.'
+  },
+  {
+    activo: 'AAPL',
+    nombre: 'Apple Inc.',
+    mercado: 'NASDAQ',
+    tipoMercado: 'tradfi',
+    moneda: 'USD',
+    precioActual: 344.29,
+    precioApertura: 344.67,
+    variacion24h: -0.11,
+    condorScore: 48,
+    dictamen: 'HOLD',
+    rsi: 54.8,
+    macd: { macd: -0.05, signal: -0.02, histogram: -0.03, cruceAlcista: false, cruceBajista: false },
+    bollinger: { sma: 344.50, upper: 347.00, lower: 342.00, bandwidth: 1.45, percentB: 0.46, tocaInferior: false, tocaSuperior: false },
+    mensaje: 'Consolidación de precio en el punto medio de Bollinger con baja volatilidad.'
+  },
+  {
+    activo: '^MERV',
+    nombre: 'S&P Merval Argentina',
+    mercado: 'BYMA',
+    tipoMercado: 'tradfi',
+    moneda: 'ARS',
+    precioActual: 2881671,
+    precioApertura: 2828027,
+    variacion24h: 1.90,
+    condorScore: 42,
+    dictamen: 'HOLD',
+    rsi: 66.5,
+    macd: { macd: 12000, signal: 10500, histogram: 1500, cruceAlcista: false, cruceBajista: false },
+    bollinger: { sma: 2840000, upper: 2895000, lower: 2785000, bandwidth: 3.87, percentB: 0.88, tocaInferior: false, tocaSuperior: false },
+    mensaje: 'Rally intradiario acercándose a la banda superior de Bollinger (percentB 88%).'
+  },
+  {
+    activo: 'ETH',
+    nombre: 'Ethereum',
+    mercado: 'Mercado Cripto ARS',
+    tipoMercado: 'cripto',
+    moneda: 'ARS',
+    precioActual: 4120000,
+    precioApertura: 4180000,
+    variacion24h: -1.43,
+    spreadActual: -0.40,
+    exchangeCompra: 'Buenbit',
+    exchangeVenta: 'Lemon Cash',
+    condorScore: 24,
+    dictamen: 'SELL',
+    rsi: 74.2,
+    macd: { macd: -1500, signal: 500, histogram: -2000, cruceAlcista: false, cruceBajista: true },
+    bollinger: { sma: 4160000, upper: 4230000, lower: 4090000, bandwidth: 3.36, percentB: 0.21, tocaInferior: false, tocaSuperior: false },
+    mensaje: 'RSI en zona caliente de resistencia y cruce bajista confirmado en MACD.'
+  },
+  {
+    activo: 'NVDA',
+    nombre: 'NVIDIA Corporation',
+    mercado: 'NASDAQ',
+    tipoMercado: 'tradfi',
+    moneda: 'USD',
+    precioActual: 142.30,
+    precioApertura: 140.80,
+    variacion24h: 1.06,
+    condorScore: 85,
+    dictamen: 'STRONG_BUY',
+    rsi: 31.2,
+    macd: { macd: 2.45, signal: 1.80, histogram: 0.65, cruceAlcista: true, cruceBajista: false },
+    bollinger: { sma: 141.00, upper: 146.00, lower: 136.00, bandwidth: 7.09, percentB: 0.63, tocaInferior: false, tocaSuperior: false },
+    mensaje: 'Fuerte impulso alcista institucional con quiebre de resistencia intradiaria.'
+  },
+  {
+    activo: 'SOL',
+    nombre: 'Solana',
+    mercado: 'Cripto ARS',
+    tipoMercado: 'cripto',
+    moneda: 'ARS',
+    precioActual: 235000,
+    precioApertura: 231000,
+    variacion24h: 1.73,
+    spreadActual: 1.45,
+    exchangeCompra: 'Fiwind',
+    exchangeVenta: 'Lemon Cash',
+    condorScore: 81,
+    dictamen: 'STRONG_BUY',
+    rsi: 33.8,
+    macd: { macd: 1200, signal: 450, histogram: 750, cruceAlcista: true, cruceBajista: false },
+    bollinger: { sma: 232000, upper: 239000, lower: 225000, bandwidth: 6.03, percentB: 0.71, tocaInferior: false, tocaSuperior: false },
+    mensaje: 'Arbitraje inter-exchange rentable (+1.45%) y volumen institucional en expansión.'
+  },
+  {
+    activo: 'AL30.BA',
+    nombre: 'Bono Bonar 2030 Ley Arg',
+    mercado: 'BYMA',
+    tipoMercado: 'tradfi',
+    moneda: 'ARS',
+    precioActual: 92450,
+    precioApertura: 91800,
+    variacion24h: 0.71,
+    condorScore: 74,
+    dictamen: 'BUY',
+    rsi: 42.5,
+    macd: { macd: 180, signal: 95, histogram: 85, cruceAlcista: true, cruceBajista: false },
+    bollinger: { sma: 91900, upper: 93500, lower: 90300, bandwidth: 3.48, percentB: 0.67, tocaInferior: false, tocaSuperior: false },
+    mensaje: 'Compresión de spreads soberanos y acumulación sostenida en curva corta.'
+  },
+  {
+    activo: 'GGAL.BA',
+    nombre: 'Grupo Financiero Galicia',
+    mercado: 'BYMA',
+    tipoMercado: 'tradfi',
+    moneda: 'ARS',
+    precioActual: 5890,
+    precioApertura: 5780,
+    variacion24h: 1.90,
+    condorScore: 72,
+    dictamen: 'BUY',
+    rsi: 46.8,
+    macd: { macd: 35, signal: 18, histogram: 17, cruceAlcista: true, cruceBajista: false },
+    bollinger: { sma: 5810, upper: 5980, lower: 5640, bandwidth: 5.85, percentB: 0.74, tocaInferior: false, tocaSuperior: false },
+    mensaje: 'Sector bancario liderando volumen en el panel líder BYMA.'
+  },
+  {
+    activo: 'TLT',
+    nombre: 'iShares 20+ Year Treasury ETF',
+    mercado: 'NASDAQ',
+    tipoMercado: 'tradfi',
+    moneda: 'USD',
+    precioActual: 94.20,
+    precioApertura: 93.80,
+    variacion24h: 0.43,
+    condorScore: 61,
+    dictamen: 'HOLD',
+    rsi: 49.3,
+    macd: { macd: 0.08, signal: 0.05, histogram: 0.03, cruceAlcista: false, cruceBajista: false },
+    bollinger: { sma: 94.00, upper: 95.20, lower: 92.80, bandwidth: 2.55, percentB: 0.58, tocaInferior: false, tocaSuperior: false },
+    mensaje: 'Curva de bonos del Tesoro de EE.UU. estable sin sobresaltos de duración.'
+  },
+  {
+    activo: 'TSLA',
+    nombre: 'Tesla Inc.',
+    mercado: 'NASDAQ',
+    tipoMercado: 'tradfi',
+    moneda: 'USD',
+    precioActual: 258.90,
+    precioApertura: 254.20,
+    variacion24h: 1.85,
+    condorScore: 59,
+    dictamen: 'HOLD',
+    rsi: 58.4,
+    macd: { macd: 1.80, signal: 1.45, histogram: 0.35, cruceAlcista: false, cruceBajista: false },
+    bollinger: { sma: 255.00, upper: 264.00, lower: 246.00, bandwidth: 7.06, percentB: 0.72, tocaInferior: false, tocaSuperior: false },
+    mensaje: 'Volatilidad moderada con rango intradiario contenido dentro de bandas.'
+  },
+  {
+    activo: 'BNB',
+    nombre: 'BNB Chain',
+    mercado: 'Cripto ARS',
+    tipoMercado: 'cripto',
+    moneda: 'ARS',
+    precioActual: 910000,
+    precioApertura: 895000,
+    variacion24h: 1.68,
+    spreadActual: 0.95,
+    exchangeCompra: 'Binance P2P',
+    exchangeVenta: 'Fiwind',
+    condorScore: 57,
+    dictamen: 'HOLD',
+    rsi: 53.1,
+    macd: { macd: 2800, signal: 2100, histogram: 700, cruceAlcista: false, cruceBajista: false },
+    bollinger: { sma: 902000, upper: 925000, lower: 879000, bandwidth: 5.10, percentB: 0.67, tocaInferior: false, tocaSuperior: false },
+    mensaje: 'Pares de liquidez estables en arbitraje fiat-cripto.'
+  },
+  {
+    activo: 'GD30.BA',
+    nombre: 'Bono Global 2030 Ley NY',
+    mercado: 'BYMA',
+    tipoMercado: 'tradfi',
+    moneda: 'ARS',
+    precioActual: 98100,
+    precioApertura: 97400,
+    variacion24h: 0.72,
+    condorScore: 56,
+    dictamen: 'HOLD',
+    rsi: 52.0,
+    macd: { macd: 140, signal: 120, histogram: 20, cruceAlcista: false, cruceBajista: false },
+    bollinger: { sma: 97600, upper: 99200, lower: 96000, bandwidth: 3.28, percentB: 0.66, tocaInferior: false, tocaSuperior: false },
+    mensaje: 'Cotización alineada a paridad histórica con el AL30.'
+  },
+  {
+    activo: 'DOGE',
+    nombre: 'Dogecoin',
+    mercado: 'Cripto ARS',
+    tipoMercado: 'cripto',
+    moneda: 'ARS',
+    precioActual: 245,
+    precioApertura: 252,
+    variacion24h: -2.78,
+    spreadActual: -0.80,
+    exchangeCompra: 'Lemon Cash',
+    exchangeVenta: 'Buenbit',
+    condorScore: 22,
+    dictamen: 'STRONG_SELL',
+    rsi: 78.5,
+    macd: { macd: -3.5, signal: -1.2, histogram: -2.3, cruceAlcista: false, cruceBajista: true },
+    bollinger: { sma: 250, upper: 260, lower: 240, bandwidth: 8.00, percentB: 0.25, tocaInferior: false, tocaSuperior: false },
+    mensaje: 'Agotamiento de volumen minorista con divergencia bajista en osciladores.'
+  }
+];
+
+
 export default function App() {
   const [monedaActiva, setMonedaActiva] = useState('USDT');
   const [seccionActiva, setSeccionActiva] = useState('mercado');
@@ -216,6 +497,7 @@ export default function App() {
   const [registrosCompletos, setRegistrosCompletos] = useState([]);
   const [registrosTradfi, setRegistrosTradfi] = useState([]);
   const [alertas, setAlertas] = useState([]);
+  const [datosScreener, setDatosScreener] = useState(DATOS_SCREENER_INICIAL);
   const [ejecutandoInsight, setEjecutandoInsight] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [tabActivo, setTabActivo] = useState('cripto');
@@ -321,22 +603,15 @@ export default function App() {
     }
   }, []);
 
-  useEffect(() => {
-    fetchCotizacionesReales();
-  }, [fetchCotizacionesReales]);
-
-  // Disparador manual para el Motor de Insights Quants (Serverless Function /api/generar-insights)
-  const ejecutarAnalisisQuant = async () => {
+  // Disparador institucional para el Screener Cuantitativo (/api/generar-insights)
+  const ejecutarAnalisisScreener = useCallback(async () => {
     setEjecutandoInsight(true);
     try {
-      const endpointUrl = tabActivo === 'tradfi'
-        ? `/api/generar-insights?mercado=tradfi&ticker=SPY`
-        : `/api/generar-insights?mercado=cripto&moneda=${monedaActiva}`;
-      const res = await fetch(endpointUrl);
+      const res = await fetch('/api/generar-insights?mercado=multimercado');
       if (res.ok) {
         const data = await res.json();
-        if (data.alerta) {
-          setAlertas(prev => [data.alerta, ...prev.filter(a => a.id !== data.alerta.id).slice(0, 9)]);
+        if (Array.isArray(data.screener) && data.screener.length > 0) {
+          setDatosScreener(data.screener);
         }
       }
       if (supabase) {
@@ -350,10 +625,20 @@ export default function App() {
         }
       }
     } catch (err) {
-      console.warn('Error al invocar /api/generar-insights:', err);
+      console.warn('[Terminal] Error al consultar /api/generar-insights:', err);
     } finally {
       setEjecutandoInsight(false);
     }
+  }, []);
+
+  useEffect(() => {
+    fetchCotizacionesReales();
+    ejecutarAnalisisScreener();
+  }, [fetchCotizacionesReales, ejecutarAnalisisScreener]);
+
+  // Disparador manual para el Motor de Insights Quants (Serverless Function /api/generar-insights)
+  const ejecutarAnalisisQuant = async () => {
+    await ejecutarAnalisisScreener();
   };
 
   /**
@@ -2044,133 +2329,8 @@ export default function App() {
             })}
           </section>
 
-          {/* 2. GRÁFICO TRADFI CON DOBLE EJE Y (USD IZQUIERDA / ARS DERECHA) */}
-          <section className="bg-white p-5 md:p-6 rounded-xl border border-gray-200 shadow-xs">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
-              <div>
-                <div className="flex items-center gap-2">
-                  <BarChart3 className="w-5 h-5 text-cyan-600" />
-                  <h2 className="text-sm font-bold text-gray-900">
-                    Evolución Multiactivo TradFi: Índices & Acciones
-                  </h2>
-                  <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-cyan-50 text-cyan-700 border border-cyan-200">
-                    Doble Eje Y
-                  </span>
-                </div>
-                <p className="text-xs text-gray-500 mt-1 font-mono">
-                  Eje Izquierdo: SPY, QQQ y AAPL en USD • Eje Derecho: S&P Merval en Millones de ARS
-                </p>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
-                <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-sky-50 text-sky-800 border border-sky-200 font-semibold">
-                  <span className="w-2 h-2 rounded-full bg-sky-500"></span> SPY ($USD)
-                </span>
-                <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-indigo-50 text-indigo-800 border border-indigo-200 font-semibold">
-                  <span className="w-2 h-2 rounded-full bg-indigo-500"></span> QQQ ($USD)
-                </span>
-                <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200 font-semibold">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500"></span> AAPL ($USD)
-                </span>
-                <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-orange-50 text-orange-800 border border-orange-200 font-semibold">
-                  <span className="w-2 h-2 rounded-full bg-orange-500"></span> MERVAL ($M ARS)
-                </span>
-              </div>
-            </div>
-
-            <div className="h-80 sm:h-96 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={datosGraficoTradfi} margin={{ top: 10, right: 30, left: 10, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
-                  <XAxis
-                    dataKey="hora"
-                    stroke="#94a3b8"
-                    tick={{ fontSize: 11, fontFamily: 'monospace' }}
-                    tickLine={false}
-                  />
-                  {/* EJE Y IZQUIERDO: USD (SPY, QQQ, AAPL) */}
-                  <YAxis
-                    yAxisId="usd"
-                    orientation="left"
-                    stroke="#0284c7"
-                    domain={['auto', 'auto']}
-                    tick={{ fontSize: 11, fontFamily: 'monospace' }}
-                    tickFormatter={val => `$${val}`}
-                    tickLine={false}
-                    axisLine={{ stroke: '#e2e8f0' }}
-                  />
-                  {/* EJE Y DERECHO: ARS (MERVAL EN MILLONES) */}
-                  <YAxis
-                    yAxisId="ars"
-                    orientation="right"
-                    stroke="#ea580c"
-                    domain={['auto', 'auto']}
-                    tick={{ fontSize: 11, fontFamily: 'monospace' }}
-                    tickFormatter={val => `$${(val / 1000000).toFixed(2)}M`}
-                    tickLine={false}
-                    axisLine={{ stroke: '#e2e8f0' }}
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: '#ffffff',
-                      border: '1px solid #e2e8f0',
-                      borderRadius: '0.75rem',
-                      boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)',
-                      fontSize: '12px',
-                      fontFamily: 'monospace'
-                    }}
-                    formatter={(valor, nombre) => {
-                      if (nombre && String(nombre).includes('MERV')) {
-                        return [`$${Math.round(valor).toLocaleString('es-AR')} ARS`, nombre];
-                      }
-                      return [`$${Number(valor).toFixed(2)} USD`, nombre];
-                    }}
-                  />
-                  <Line
-                    yAxisId="usd"
-                    type="monotone"
-                    dataKey="SPY"
-                    name="SPY (S&P 500 ETF)"
-                    stroke="#0284c7"
-                    strokeWidth={2.2}
-                    dot={{ r: 3, fill: '#0284c7' }}
-                    activeDot={{ r: 5 }}
-                  />
-                  <Line
-                    yAxisId="usd"
-                    type="monotone"
-                    dataKey="QQQ"
-                    name="QQQ (Nasdaq 100)"
-                    stroke="#6366f1"
-                    strokeWidth={2.2}
-                    dot={{ r: 3, fill: '#6366f1' }}
-                    activeDot={{ r: 5 }}
-                  />
-                  <Line
-                    yAxisId="usd"
-                    type="monotone"
-                    dataKey="AAPL"
-                    name="AAPL (Apple Inc.)"
-                    stroke="#10b981"
-                    strokeWidth={2.2}
-                    dot={{ r: 3, fill: '#10b981' }}
-                    activeDot={{ r: 5 }}
-                  />
-                  <Line
-                    yAxisId="ars"
-                    type="monotone"
-                    dataKey="MERV"
-                    name="^MERV (S&P Merval)"
-                    stroke="#ea580c"
-                    strokeWidth={2.5}
-                    strokeDasharray="4 2"
-                    dot={{ r: 3, fill: '#ea580c' }}
-                    activeDot={{ r: 6 }}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </section>
+          {/* 2. GRÁFICO INSTITUCIONAL DE VELAS JAPONESAS TRADINGVIEW (TradFi) */}
+          <TradFiCandlestickChart registrosTradfi={registrosTradfi} />
 
           {/* 3. TABLA DE DETALLES DE MERCADOS TRADICIONALES */}
           <section className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-xs">
@@ -2261,148 +2421,15 @@ export default function App() {
       )}
 
       {/* =========================================================================
-          RADAR DE INSIGHTS QUANTS (Feed de Alertas Financieras)
+          SCREENER DATAGRID CUANTITATIVO (ESTILO BLOOMBERG TERMINAL)
       ========================================================================== */}
-      <section id="radar-insights-quants" className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-xs">
-        {/* Cabecera del Panel */}
-        <div className="p-4 sm:p-5 border-b border-gray-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-gradient-to-r from-gray-50/80 via-white to-gray-50/50">
-          <div>
-            <div className="flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-orange-600" />
-              <h3 className="text-sm font-bold text-gray-900 tracking-tight">
-                Radar de Insights Quants
-              </h3>
-              <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-orange-50 text-orange-700 border border-orange-200">
-                SMA + 1.5σ Engine
-              </span>
-            </div>
-            <p className="text-xs text-gray-500 mt-0.5 font-mono">
-              Detección algorítmica de anomalías estadísticas y oportunidades de arbitraje en tiempo real
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            {/* BOTÓN EXPORTAR DATOS CSV (Estilo secundario / fantasma) */}
-            <button
-              onClick={descargarHistorialCSV}
-              disabled={isExporting}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white hover:bg-gray-50 text-gray-700 hover:text-gray-900 border border-gray-300 transition active:scale-95 disabled:opacity-50 cursor-pointer shadow-2xs"
-              title="Descargar historial de cotizaciones en formato CSV"
-            >
-              {isExporting ? (
-                <RefreshCw className="w-3.5 h-3.5 text-orange-600 animate-spin" />
-              ) : (
-                <Download className="w-3.5 h-3.5 text-gray-500" />
-              )}
-              <span>{isExporting ? 'Exportando...' : 'Exportar Datos (CSV)'}</span>
-            </button>
-
-            {/* BOTÓN ESCANEAR ANOMALÍAS */}
-            <button
-              onClick={ejecutarAnalisisQuant}
-              disabled={ejecutandoInsight}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-gray-100 hover:bg-gray-200 text-gray-700 border border-gray-200 transition active:scale-95 disabled:opacity-50 cursor-pointer shadow-2xs"
-              title="Ejecutar análisis estadístico sobre los últimos 100 registros con el microservicio"
-            >
-              <Zap className={`w-3.5 h-3.5 text-orange-600 ${ejecutandoInsight ? 'animate-bounce' : ''}`} />
-              <span>{ejecutandoInsight ? 'Calculando...' : 'Escanear Anomalías'}</span>
-            </button>
-            <span className="text-[11px] font-mono text-gray-500 px-2.5 py-1 rounded-md bg-gray-50 border border-gray-200">
-              {alertas.length} {alertas.length === 1 ? 'alerta' : 'alertas'}
-            </span>
-          </div>
-        </div>
-
-        {/* Feed de Tarjetas de Notificación o Estado Vacío */}
-        <div className="p-5">
-          {alertas.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {alertas.map((alerta, index) => {
-                const esOportunidadAlta = alerta.tipo_alerta === 'OPORTUNIDAD_ALTA';
-                const badgeClass = esOportunidadAlta
-                  ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
-                  : 'bg-cyan-50 text-cyan-800 border-cyan-300';
-                const monedaPar = `${alerta.moneda || 'USDT'}/ARS`;
-                const tiempoRelativo = formatearTiempoRelativo(alerta.timestamp);
-
-                return (
-                  <div
-                    key={alerta.id || index}
-                    className={`p-4 rounded-xl border transition duration-150 shadow-2xs hover:shadow-xs flex flex-col justify-between ${
-                      esOportunidadAlta
-                        ? 'border-emerald-200 bg-emerald-50/20 hover:border-emerald-300'
-                        : 'border-gray-200 bg-white hover:border-gray-300'
-                    }`}
-                  >
-                    <div>
-                      {/* Cabecera de la tarjeta: Badge + Par + Tiempo */}
-                      <div className="flex items-center justify-between gap-2 mb-2.5">
-                        <div className="flex items-center gap-2">
-                          <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-mono font-bold border ${badgeClass}`}>
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                            {alerta.tipo_alerta || 'OPORTUNIDAD_ALTA'}
-                          </span>
-                          <span className="text-xs font-mono font-bold text-gray-900 px-1.5 py-0.5 rounded bg-gray-100 border border-gray-200">
-                            {monedaPar}
-                          </span>
-                        </div>
-                        <span className="text-[10px] font-mono text-gray-400 flex items-center gap-1">
-                          <Clock className="w-3 h-3 text-gray-400" />
-                          {tiempoRelativo}
-                        </span>
-                      </div>
-
-                      {/* Mensaje descriptivo */}
-                      <p className="text-xs text-gray-700 font-medium leading-relaxed mb-3">
-                        {alerta.mensaje}
-                      </p>
-                    </div>
-
-                    {/* Métricas y exchanges al pie de la tarjeta */}
-                    <div className="pt-2.5 border-t border-gray-100 flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono">
-                      {(alerta.exchange_compra || alerta.exchange_venta) && (
-                        <div className="flex items-center gap-1 text-gray-600 truncate">
-                          <span className="font-semibold text-gray-800">{alerta.exchange_compra || 'Compra'}</span>
-                          <ArrowRight className="w-3 h-3 text-gray-400" />
-                          <span className="font-semibold text-gray-800">{alerta.exchange_venta || 'Venta'}</span>
-                        </div>
-                      )}
-                      {typeof alerta.spread_actual === 'number' && (
-                        <span className="font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
-                          +{alerta.spread_actual.toFixed(2)}% Spread
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            /* Estado vacío profesional */
-            <div className="py-10 px-4 flex flex-col items-center justify-center text-center">
-              <div className="w-12 h-12 rounded-2xl bg-orange-50 border border-orange-200 flex items-center justify-center mb-3 text-orange-600 shadow-2xs">
-                <Activity className="w-6 h-6 animate-pulse" />
-              </div>
-              <h4 className="text-sm font-bold text-gray-800 mb-1">
-                Analizando volatilidad del mercado... Sin anomalías recientes
-              </h4>
-              <p className="text-xs text-gray-500 font-mono max-w-md">
-                El motor estadístico está evaluando cotizaciones históricas (SMA y desviación estándar a 1.5σ). Las oportunidades de arbitraje que superen el umbral se publicarán aquí automáticamente.
-              </p>
-              <div className="mt-4 flex items-center gap-2">
-                <button
-                  onClick={ejecutarAnalisisQuant}
-                  disabled={ejecutandoInsight}
-                  className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-orange-600 hover:bg-orange-700 text-white transition active:scale-95 shadow-xs disabled:opacity-50 cursor-pointer"
-                >
-                  <Zap className={`w-3.5 h-3.5 ${ejecutandoInsight ? 'animate-spin' : ''}`} />
-                  <span>{ejecutandoInsight ? 'Ejecutando algoritmo...' : 'Ejecutar Análisis Ahora'}</span>
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      </section>
+      <ScreenerDataGrid
+        datosScreener={datosScreener}
+        ejecutandoInsight={ejecutandoInsight}
+        onEjecutarAnalisis={ejecutarAnalisisScreener}
+        onExportarCSV={descargarHistorialCSV}
+        isExporting={isExporting}
+      />
     </div>
   </main>
 </div>
