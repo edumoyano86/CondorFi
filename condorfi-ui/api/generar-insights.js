@@ -357,13 +357,14 @@ function esActivoTradfi(activo, mercadoParam) {
 
 /**
  * Procesa cuantitativamente un activo TradFi.
+ * Implementa Graceful Degradation: Nunca descarta un activo del array final.
  */
 async function analizarActivoTradfi(db, ticker, limite = 100) {
   const meta = ASSETS_METADATA[ticker] || {
     nombre: ticker,
     mercado: 'TradFi',
     tipo: 'tradfi',
-    baseMoneda: ticker === '^MERV' ? 'ARS' : 'USD'
+    baseMoneda: (ticker === '^MERV' || ticker.endsWith('.BA')) ? 'ARS' : 'USD'
   };
 
   const { data: registros, error } = await db
@@ -373,13 +374,32 @@ async function analizarActivoTradfi(db, ticker, limite = 100) {
     .order('id', { ascending: false })
     .limit(limite);
 
+  // Caso 1: Sin registros en base de datos (0 muestras)
   if (error || !registros || registros.length === 0) {
-    return null;
+    return {
+      activo: ticker,
+      nombre: meta.nombre,
+      mercado: meta.mercado,
+      tipoMercado: 'tradfi',
+      moneda: meta.baseMoneda,
+      precioActual: null,
+      precioApertura: null,
+      variacion24h: 0,
+      condorScore: null,
+      dictamen: 'INSUFFICIENT_DATA',
+      status: 'INSUFFICIENT_DATA',
+      rsi: null,
+      macd: null,
+      bollinger: null,
+      esVolatilidadExtrema: false,
+      mensaje: `Historial insuficiente para ${ticker} (0 muestras en base de datos). Recopilando datos de mercado.`,
+      totalMuestras: 0,
+      timestamp: new Date().toISOString()
+    };
   }
 
   // Invertir a orden cronológico (antiguo -> reciente) para indicadores técnicos
   const cronologicos = [...registros].reverse();
-
   const precios = cronologicos.map(r => Number(r.precio_actual)).filter(p => !isNaN(p) && p > 0);
   const registroReciente = registros[0];
   const precioActual = Number(registroReciente.precio_actual) || 0;
@@ -389,7 +409,31 @@ async function analizarActivoTradfi(db, ticker, limite = 100) {
     ? Number((((precioActual - precioApertura) / precioApertura) * 100).toFixed(2))
     : 0;
 
-  // Cálculos Cuantitativos
+  // Caso 2: Muestras insuficientes para modelos estadísticos (< 14 períodos)
+  if (precios.length < 14) {
+    return {
+      activo: ticker,
+      nombre: meta.nombre,
+      mercado: meta.mercado,
+      tipoMercado: 'tradfi',
+      moneda: registroReciente.moneda || meta.baseMoneda,
+      precioActual,
+      precioApertura,
+      variacion24h: variacionApertura,
+      condorScore: null,
+      dictamen: 'INSUFFICIENT_DATA',
+      status: 'INSUFFICIENT_DATA',
+      rsi: null,
+      macd: null,
+      bollinger: null,
+      esVolatilidadExtrema: false,
+      mensaje: `Historial preliminar (${precios.length}/14 muestras requeridas). Indicadores cuantitativos en proceso de cálculo.`,
+      totalMuestras: registros.length,
+      timestamp: registroReciente.timestamp || new Date().toISOString()
+    };
+  }
+
+  // Caso 3: Historial suficiente (>= 14 períodos) -> Cálculo completo de modelos cuantitativos
   const rsi = calcularRSI(precios, 14);
   const macd = calcularMACD(precios, 12, 26, 9);
   const bollinger = calcularBandasBollinger(precios, 20, 2);
@@ -424,6 +468,7 @@ async function analizarActivoTradfi(db, ticker, limite = 100) {
     variacion24h: variacionApertura,
     condorScore,
     dictamen,
+    status: 'CALCULATED',
     rsi,
     macd,
     bollinger,
@@ -436,6 +481,7 @@ async function analizarActivoTradfi(db, ticker, limite = 100) {
 
 /**
  * Procesa cuantitativamente un activo Cripto.
+ * Implementa Graceful Degradation: Nunca descarta un activo del array final.
  */
 async function analizarActivoCripto(db, moneda, limite = 100) {
   const meta = ASSETS_METADATA[moneda] || {
@@ -445,15 +491,41 @@ async function analizarActivoCripto(db, moneda, limite = 100) {
     baseMoneda: 'ARS'
   };
 
+  const monedasBuscar = moneda === 'MATIC' || moneda === 'POL' ? ['MATIC', 'POL'] : [moneda];
+
   const { data: registros, error } = await db
     .from('cotizaciones_historicas')
     .select('id, timestamp, moneda, exchange, precio_compra, precio_venta, spread, exchange_compra, exchange_venta')
-    .eq('moneda', moneda)
+    .in('moneda', monedasBuscar)
     .order('timestamp', { ascending: false })
     .limit(limite);
 
+  // Caso 1: Sin registros en base de datos (0 muestras)
   if (error || !registros || registros.length === 0) {
-    return null;
+    return {
+      activo: moneda,
+      nombre: meta.nombre,
+      mercado: meta.mercado,
+      tipoMercado: 'cripto',
+      moneda: 'ARS',
+      precioActual: null,
+      precioApertura: null,
+      precioCompra: null,
+      precioVenta: null,
+      variacion24h: 0,
+      spreadActual: 0,
+      exchangeCompra: 'Sin exchange',
+      exchangeVenta: 'Sin exchange',
+      condorScore: null,
+      dictamen: 'INSUFFICIENT_DATA',
+      status: 'INSUFFICIENT_DATA',
+      rsi: null,
+      macd: null,
+      bollinger: null,
+      mensaje: `Historial insuficiente para ${moneda}/ARS (0 muestras en base de datos). Recopilando cotizaciones.`,
+      totalMuestras: 0,
+      timestamp: new Date().toISOString()
+    };
   }
 
   const cronologicos = [...registros].reverse();
@@ -475,7 +547,38 @@ async function analizarActivoCripto(db, moneda, limite = 100) {
     ? Number(registroReciente.spread.toFixed(4))
     : (precioAsk > 0 ? Number((((precioBid - precioAsk) / precioAsk) * 100).toFixed(4)) : 0);
 
-  // Cálculos Cuantitativos
+  const exchangeCompra = registroReciente.exchange_compra || (registroReciente.exchange?.split('->')[0]?.trim()) || 'Ex. Compra';
+  const exchangeVenta = registroReciente.exchange_venta || (registroReciente.exchange?.split('->')[1]?.trim()) || 'Ex. Venta';
+
+  // Caso 2: Muestras insuficientes para modelos estadísticos (< 14 períodos)
+  if (preciosMedios.length < 14) {
+    return {
+      activo: moneda,
+      nombre: meta.nombre,
+      mercado: meta.mercado,
+      tipoMercado: 'cripto',
+      moneda: 'ARS',
+      precioActual,
+      precioApertura: precioAsk,
+      precioCompra: precioAsk,
+      precioVenta: precioBid,
+      variacion24h: spreadActual,
+      spreadActual,
+      exchangeCompra,
+      exchangeVenta,
+      condorScore: null,
+      dictamen: 'INSUFFICIENT_DATA',
+      status: 'INSUFFICIENT_DATA',
+      rsi: null,
+      macd: null,
+      bollinger: null,
+      mensaje: `Historial preliminar (${preciosMedios.length}/14 muestras requeridas). Modelos cuantitativos en proceso de cálculo.`,
+      totalMuestras: registros.length,
+      timestamp: registroReciente.timestamp || new Date().toISOString()
+    };
+  }
+
+  // Caso 3: Historial suficiente (>= 14 períodos) -> Cálculo completo de modelos cuantitativos
   const rsi = calcularRSI(preciosMedios, 14);
   const macd = calcularMACD(preciosMedios, 12, 26, 9);
   const bollinger = calcularBandasBollinger(preciosMedios, 20, 2);
@@ -487,9 +590,6 @@ async function analizarActivoCripto(db, moneda, limite = 100) {
     precioActual,
     variacion24h: spreadActual
   });
-
-  const exchangeCompra = registroReciente.exchange_compra || (registroReciente.exchange?.split('->')[0]?.trim()) || 'Ex. Compra';
-  const exchangeVenta = registroReciente.exchange_venta || (registroReciente.exchange?.split('->')[1]?.trim()) || 'Ex. Venta';
 
   let mensaje = `${moneda}/ARS: CondorScore ${condorScore}/100 (${dictamen}). Spread actual: ${spreadActual > 0 ? '+' : ''}${spreadActual.toFixed(2)}%. Compra: ${exchangeCompra} ($${precioAsk}) -> Venta: ${exchangeVenta} ($${precioBid}).`;
 
@@ -509,6 +609,7 @@ async function analizarActivoCripto(db, moneda, limite = 100) {
     exchangeVenta,
     condorScore,
     dictamen,
+    status: 'CALCULATED',
     rsi,
     macd,
     bollinger,
@@ -566,13 +667,14 @@ export default async function handler(req, res) {
     const screenerResults = [];
     const alertasParaGuardar = [];
 
-    resultadosSettled.forEach(item => {
+    resultadosSettled.forEach((item, idx) => {
+      const activo = listaActivos[idx];
       if (item.status === 'fulfilled' && item.value) {
         const resultado = item.value;
         screenerResults.push(resultado);
 
-        // Si el veredicto es 'STRONG_BUY' o 'STRONG_SELL' o anomalía, preparar alerta estructurada
-        if (resultado.dictamen === 'STRONG_BUY' || resultado.dictamen === 'STRONG_SELL' || resultado.esVolatilidadExtrema) {
+        // Si el veredicto es 'STRONG_BUY' o 'STRONG_SELL' o anomalía, y los cálculos son válidos, preparar alerta
+        if (resultado.status === 'CALCULATED' && resultado.bollinger && (resultado.dictamen === 'STRONG_BUY' || resultado.dictamen === 'STRONG_SELL' || resultado.esVolatilidadExtrema)) {
           const tipoAlerta = resultado.esVolatilidadExtrema ? 'VOLATILIDAD_EXTREMA' : resultado.dictamen;
           const safeSpread = Math.min(999.99, Math.max(-999.99, Number(resultado.variacion24h || 0)));
           const safeSMA = Math.min(999.99, Math.max(-999.99, Number(resultado.bollinger.percentB ? (resultado.bollinger.percentB * 100) : 50)));
@@ -590,6 +692,30 @@ export default async function handler(req, res) {
             timestamp: new Date().toISOString()
           });
         }
+      } else {
+        const errorMsg = item.reason?.message || String(item.reason || 'Error no controlado');
+        console.error('Fallo en activo motor quant:', activo, 'Motivo:', errorMsg);
+        const meta = ASSETS_METADATA[activo] || { nombre: activo, mercado: 'Multimercado', tipo: 'desconocido', baseMoneda: 'USD' };
+        screenerResults.push({
+          activo,
+          nombre: meta.nombre,
+          mercado: meta.mercado,
+          tipoMercado: meta.tipo,
+          moneda: meta.baseMoneda,
+          precioActual: null,
+          precioApertura: null,
+          variacion24h: 0,
+          condorScore: null,
+          dictamen: 'INSUFFICIENT_DATA',
+          status: 'INSUFFICIENT_DATA',
+          rsi: null,
+          macd: null,
+          bollinger: null,
+          esVolatilidadExtrema: false,
+          mensaje: `Error en análisis del activo (${errorMsg}). Esperando sincronización.`,
+          totalMuestras: 0,
+          timestamp: new Date().toISOString()
+        });
       }
     });
 
@@ -614,10 +740,17 @@ export default async function handler(req, res) {
 
     const duracionMs = Math.round(performance.now() - inicio);
 
-    // 5. Ordenamiento institucional por mayor CondorScore por defecto
-    screenerResults.sort((a, b) => b.condorScore - a.condorScore);
+    // 5. Ordenamiento institucional: CondorScores válidos arriba en orden descendente, nulls abajo
+    screenerResults.sort((a, b) => {
+      const scoreA = typeof a.condorScore === 'number' ? a.condorScore : -1;
+      const scoreB = typeof b.condorScore === 'number' ? b.condorScore : -1;
+      if (scoreA !== scoreB) {
+        return scoreB - scoreA;
+      }
+      return a.activo.localeCompare(b.activo);
+    });
 
-    // 6. Respuesta HTTP 200 con formato institucional
+    // 6. Respuesta HTTP 200 con formato institucional garantizando los 41 activos
     return res.status(200).json({
       status: "success",
       timestamp: new Date().toISOString(),

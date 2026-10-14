@@ -3,53 +3,197 @@
  * CondorFi - Screener DataGrid Cuantitativo (Estilo Bloomberg Terminal)
  * Archivo: condorfi-ui/src/components/ScreenerDataGrid.jsx
  * 
- * Funcionalidades:
- * - Tabla avanzada de alta densidad de información estilo terminal financiera
+ * Funcionalidades Institucionales:
+ * - Clasificación modular en 4 Vistas (Tabs): Criptomonedas, Acciones, Índices, Bonos
+ * - Menú superior de navegación estilo 'Pills' con contadores dinámicos por categoría
+ * - Reducción de carga cognitiva con filtrado estricto por pestaña activa
+ * - Estado vacío elegante ('Esperando datos de mercado para esta categoría...')
  * - Columnas ordenables interactivamente: Activo, Precio Actual, CondorScore, RSI, MACD, Señal
- * - Barra visual de progreso para CondorScore (0-100) con gradiente de color dinámico
- * - Badges institucionales para Señales: STRONG_BUY, BUY, HOLD, SELL, STRONG_SELL
- * - Filtros rápidos por mercado: Todos, TradFi, Cripto
- * - Ejecución interactiva del motor cuantitativo (/api/generar-insights)
+ * - Barra visual de progreso para CondorScore (0-100) y badges de Graceful Degradation
+ * - Soporte institucional de expansión de fila y exportación CSV
  * ==============================================================================
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
   Sparkles,
   Zap,
-  TrendingUp,
-  TrendingDown,
   Download,
   Search,
-  Filter,
-  CheckCircle2,
   AlertTriangle,
+  Clock,
   Info,
-  ChevronDown,
-  ChevronUp,
   ChevronLeft,
   ChevronRight
 } from 'lucide-react';
 
+// Constantes de clasificación según el universo de CondorFi
+export const INDICES_TICKERS = ['^MERV', 'SPY', 'QQQ', 'DIA', 'IWM'];
+export const BONOS_TICKERS = ['AL30.BA', 'GD30.BA', 'TLT'];
+
+/**
+ * Función auxiliar de clasificación institucional.
+ * Clasifica cada activo en una de las 4 categorías:
+ * - 'Criptomonedas'
+ * - 'Acciones'
+ * - 'Índices'
+ * - 'Bonos'
+ */
+export function clasificarActivo(item) {
+  if (!item) return 'Acciones';
+  const ticker = (item.activo || item.ticker || '').toUpperCase();
+
+  // 1. Criptomonedas: Si su mercado o tipoMercado es cripto
+  if (
+    item.tipoMercado === 'cripto' ||
+    (item.mercado && item.mercado.toLowerCase().includes('cripto'))
+  ) {
+    return 'Criptomonedas';
+  }
+
+  // 2. Índices: Benchmarks globales y Merval
+  if (INDICES_TICKERS.includes(ticker)) {
+    return 'Índices';
+  }
+
+  // 3. Bonos: Soberanos argentinos y Renta Fija US
+  if (BONOS_TICKERS.includes(ticker)) {
+    return 'Bonos';
+  }
+
+  // 4. Acciones: Cualquier activo TradFi restante (tech, NYSE, NASDAQ, BYMA)
+  return 'Acciones';
+}
+
+export const TABS_CONFIG = [
+  { id: 'Criptomonedas', label: '🪙 Criptomonedas' },
+  { id: 'Acciones',      label: '🏢 Acciones' },
+  { id: 'Índices',       label: '📊 Índices' },
+  { id: 'Bonos',         label: '🏛️ Bonos' }
+];
+
+export const normalizarCategoria = (cat) => {
+  if (!cat) return null;
+  const c = String(cat).toLowerCase().trim();
+  if (c.includes('bono')) return 'Bonos';
+  if (c.includes('accion')) return 'Acciones';
+  if (c.includes('indice') || c.includes('índice')) return 'Índices';
+  if (c.includes('cripto')) return 'Criptomonedas';
+  return cat;
+};
 
 export default function ScreenerDataGrid({
   datosScreener = [],
   ejecutandoInsight = false,
   onEjecutarAnalisis,
   onExportarCSV,
-  isExporting = false
+  isExporting = false,
+  filtroCategoria = null
 }) {
+  const categoriaNormalizada = useMemo(() => normalizarCategoria(filtroCategoria), [filtroCategoria]);
+  // Estado activo de navegación modular (por defecto filtroCategoria o 'Criptomonedas')
+  const [tabActivo, setTabActivo] = useState(categoriaNormalizada || 'Criptomonedas');
   const [columnaOrden, setColumnaOrden] = useState('condorScore');
   const [direccionOrden, setDireccionOrden] = useState('desc'); // 'asc' | 'desc'
-  const [filtroMercado, setFiltroMercado] = useState('todos');  // 'todos' | 'tradfi' | 'cripto'
   const [busqueda, setBusqueda] = useState('');
   const [filaExpandida, setFilaExpandida] = useState(null);
   const [paginaActual, setPaginaActual] = useState(1);
-  const [filasPorPagina, setFilasPorPagina] = useState(15); // 15 | 30 | 'todos'
+  const [filasPorPagina, setFilasPorPagina] = useState(20); // 10 | 20 | 'todos'
 
+  useEffect(() => {
+    if (categoriaNormalizada) {
+      setTabActivo(categoriaNormalizada);
+      setPaginaActual(1);
+      setFilaExpandida(null);
+    }
+  }, [categoriaNormalizada]);
+
+  const categoriaEfectiva = categoriaNormalizada || tabActivo;
+
+  // Conteo dinámico de activos por categoría para los badges de las pestañas
+  const conteoPorCategoria = useMemo(() => {
+    const conteo = { Criptomonedas: 0, Acciones: 0, Índices: 0, Bonos: 0 };
+    datosScreener.forEach(item => {
+      const cat = clasificarActivo(item);
+      if (conteo[cat] !== undefined) {
+        conteo[cat]++;
+      }
+    });
+    return conteo;
+  }, [datosScreener]);
+
+  // Activos pertenecientes a la categoría de la pestaña activa o filtrada
+  const datosCategoriaActiva = useMemo(() => {
+    return datosScreener.filter(item => clasificarActivo(item) === categoriaEfectiva);
+  }, [datosScreener, categoriaEfectiva]);
+
+  // Filtrado por búsqueda y ordenamiento institucional
+  const datosProcesados = useMemo(() => {
+    let lista = [...datosCategoriaActiva];
+
+    // Búsqueda por texto (ticker o nombre descriptivo)
+    if (busqueda.trim()) {
+      const q = busqueda.toLowerCase().trim();
+      lista = lista.filter(item =>
+        item.activo.toLowerCase().includes(q) ||
+        (item.nombre && item.nombre.toLowerCase().includes(q))
+      );
+    }
+
+    // Ordenamiento dinámico con tolerancia defensiva a valores nulos
+    lista.sort((a, b) => {
+      if (columnaOrden === 'condorScore') {
+        const numA = typeof a.condorScore === 'number' ? a.condorScore : -1;
+        const numB = typeof b.condorScore === 'number' ? b.condorScore : -1;
+        if (numA !== numB) {
+          return direccionOrden === 'asc' ? numA - numB : numB - numA;
+        }
+        return a.activo.localeCompare(b.activo);
+      }
+
+      let valA = a[columnaOrden];
+      let valB = b[columnaOrden];
+
+      if (columnaOrden === 'macd') {
+        valA = a.macd?.histogram ?? -9999;
+        valB = b.macd?.histogram ?? -9999;
+      } else if (columnaOrden === 'rsi') {
+        valA = typeof a.rsi === 'number' ? a.rsi : -1;
+        valB = typeof b.rsi === 'number' ? b.rsi : -1;
+      } else if (columnaOrden === 'precioActual') {
+        valA = typeof a.precioActual === 'number' ? a.precioActual : -1;
+        valB = typeof b.precioActual === 'number' ? b.precioActual : -1;
+      } else if (columnaOrden === 'activo') {
+        valA = a.activo.toLowerCase();
+        valB = b.activo.toLowerCase();
+      } else if (columnaOrden === 'dictamen') {
+        const pesoDictamen = { STRONG_BUY: 5, BUY: 4, HOLD: 3, SELL: 2, STRONG_SELL: 1, INSUFFICIENT_DATA: 0 };
+        valA = pesoDictamen[a.dictamen] ?? 0;
+        valB = pesoDictamen[b.dictamen] ?? 0;
+      }
+
+      if (valA < valB) return direccionOrden === 'asc' ? -1 : 1;
+      if (valA > valB) return direccionOrden === 'asc' ? 1 : -1;
+      return 0;
+    });
+
+    return lista;
+  }, [datosCategoriaActiva, busqueda, columnaOrden, direccionOrden]);
+
+  // Cálculos de paginación para la vista activa
+  const totalFilas = datosProcesados.length;
+  const esModoTodos = filasPorPagina === 'todos';
+  const totalPaginas = esModoTodos ? 1 : Math.max(1, Math.ceil(totalFilas / (Number(filasPorPagina) || 20)));
+
+  const datosPaginados = useMemo(() => {
+    if (esModoTodos) return datosProcesados;
+    const porPag = Number(filasPorPagina) || 20;
+    const inicio = (paginaActual - 1) * porPag;
+    return datosProcesados.slice(inicio, inicio + porPag);
+  }, [datosProcesados, paginaActual, filasPorPagina, esModoTodos]);
 
   // Manejador del ordenamiento al hacer clic en las cabeceras
   const manejarOrden = (columna) => {
@@ -60,64 +204,6 @@ export default function ScreenerDataGrid({
       setDireccionOrden('desc');
     }
   };
-
-  // Filtrado y ordenamiento de los datos del Screener
-  const datosProcesados = useMemo(() => {
-    let lista = [...datosScreener];
-
-    // 1. Filtrado por mercado
-    if (filtroMercado === 'tradfi') {
-      lista = lista.filter(item => item.tipoMercado === 'tradfi');
-    } else if (filtroMercado === 'cripto') {
-      lista = lista.filter(item => item.tipoMercado === 'cripto');
-    }
-
-    // 2. Búsqueda por texto (ticker o nombre)
-    if (busqueda.trim()) {
-      const q = busqueda.toLowerCase().trim();
-      lista = lista.filter(item =>
-        item.activo.toLowerCase().includes(q) ||
-        (item.nombre && item.nombre.toLowerCase().includes(q))
-      );
-    }
-
-    // 3. Ordenamiento dinámico
-    lista.sort((a, b) => {
-      let valA = a[columnaOrden];
-      let valB = b[columnaOrden];
-
-      if (columnaOrden === 'macd') {
-        valA = a.macd?.histogram ?? 0;
-        valB = b.macd?.histogram ?? 0;
-      } else if (columnaOrden === 'activo') {
-        valA = a.activo.toLowerCase();
-        valB = b.activo.toLowerCase();
-      } else if (columnaOrden === 'dictamen') {
-        const pesoDictamen = { STRONG_BUY: 5, BUY: 4, HOLD: 3, SELL: 2, STRONG_SELL: 1 };
-        valA = pesoDictamen[a.dictamen] || 0;
-        valB = pesoDictamen[b.dictamen] || 0;
-      }
-
-      if (valA < valB) return direccionOrden === 'asc' ? -1 : 1;
-      if (valA > valB) return direccionOrden === 'asc' ? 1 : -1;
-      return 0;
-    });
-
-    return lista;
-  }, [datosScreener, filtroMercado, busqueda, columnaOrden, direccionOrden]);
-
-  // Cálculos de paginación institucional
-  const totalFilas = datosProcesados.length;
-  const esModoTodos = filasPorPagina === 'todos';
-  const totalPaginas = esModoTodos ? 1 : Math.max(1, Math.ceil(totalFilas / (Number(filasPorPagina) || 15)));
-
-  const datosPaginados = useMemo(() => {
-    if (esModoTodos) return datosProcesados;
-    const porPag = Number(filasPorPagina) || 15;
-    const inicio = (paginaActual - 1) * porPag;
-    return datosProcesados.slice(inicio, inicio + porPag);
-  }, [datosProcesados, paginaActual, filasPorPagina, esModoTodos]);
-
 
   // Indicador visual de orden en la cabecera
   const renderIconoOrden = (columna) => {
@@ -131,6 +217,13 @@ export default function ScreenerDataGrid({
 
   // Color y estilo del CondorScore
   const obtenerEstiloScore = (score) => {
+    if (score === null || score === undefined) {
+      return {
+        gradiente: 'from-amber-400 to-amber-500',
+        texto: 'text-amber-600',
+        fondo: 'bg-amber-400'
+      };
+    }
     if (score >= 80) {
       return {
         gradiente: 'from-emerald-500 to-teal-400',
@@ -166,9 +259,16 @@ export default function ScreenerDataGrid({
     };
   };
 
-  // Badge institucional para la Señal (Dictamen Final)
+  // Badge institucional para la Señal (Dictamen Cuantitativo)
   const renderBadgeDictamen = (dictamen) => {
     switch (dictamen) {
+      case 'INSUFFICIENT_DATA':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-mono font-bold bg-amber-50 text-amber-700 border border-amber-300">
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+            CALCULANDO...
+          </span>
+        );
       case 'STRONG_BUY':
         return (
           <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-mono font-extrabold bg-emerald-600 text-white shadow-xs tracking-wider ring-1 ring-emerald-500/80 animate-pulse">
@@ -221,11 +321,11 @@ export default function ScreenerDataGrid({
               Screener DataGrid Cuantitativo
             </h3>
             <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-orange-100 text-orange-800 border border-orange-200">
-              Bloomberg Terminal Style
+              Terminal Institucional
             </span>
           </div>
           <p className="text-xs text-gray-500 mt-1 font-mono">
-            Modelos de Valuación Cuantitativa: RSI(14) • MACD(12,26,9) • Bandas de Bollinger(20,2σ) • CondorScore Institucional
+            Modelos de Valuación: RSI(14) • MACD(12,26,9) • Bandas de Bollinger(20,2σ) • CondorScore
           </p>
         </div>
 
@@ -257,42 +357,75 @@ export default function ScreenerDataGrid({
         </div>
       </div>
 
-      {/* 2. BARRA DE HERRAMIENTAS: BÚSQUEDA Y FILTROS POR MERCADO */}
-      <div className="p-3 sm:px-5 border-b border-gray-100 bg-gray-50/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs font-mono">
-        <div className="flex items-center gap-2">
-          <span className="text-gray-400 flex items-center gap-1 font-semibold">
-            <Filter className="w-3.5 h-3.5" /> Filtrar:
-          </span>
-          <div className="flex items-center p-0.5 rounded-lg bg-gray-200/80 border border-gray-300/80">
-            {[
-              { id: 'todos', label: 'Todos' },
-              { id: 'tradfi', label: 'TradFi (Acciones/ETFs)' },
-              { id: 'cripto', label: 'Cripto ARS' }
-            ].map(tab => (
-              <button
-                key={tab.id}
-                onClick={() => setFiltroMercado(tab.id)}
-                className={`px-2.5 py-1 rounded-md transition cursor-pointer font-bold ${
-                  filtroMercado === tab.id
-                    ? 'bg-white text-gray-900 shadow-2xs'
-                    : 'text-gray-600 hover:text-gray-900'
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
+      {/* 2. SISTEMA DE PESTAÑAS (TABS) MODULARES CON TAILWIND */}
+      <div className="p-3 sm:px-5 border-b border-gray-200 bg-gray-50/70 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs font-mono">
+        {/* Pestañas o Indicador de Categoría Filtrada */}
+        {categoriaNormalizada ? (
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold bg-orange-600 text-white shadow-xs">
+              <span>
+                {categoriaNormalizada === 'Bonos' && '🏛️'}
+                {categoriaNormalizada === 'Índices' && '📊'}
+                {categoriaNormalizada === 'Acciones' && '🏢'}
+                {categoriaNormalizada === 'Criptomonedas' && '🪙'}
+              </span>
+              <span>{categoriaNormalizada}</span>
+              <span className="text-[10px] font-mono font-bold px-1.5 py-0.2 rounded-full bg-orange-700/90 text-orange-50">
+                {datosCategoriaActiva.length}
+              </span>
+            </span>
+            <span className="text-[11px] text-gray-500 hidden sm:inline">
+              Filtrado por ruta institucional
+            </span>
           </div>
-        </div>
+        ) : (
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0 scrollbar-none">
+            {TABS_CONFIG.map(tab => {
+              const estaActiva = tabActivo === tab.id;
+              const cantidad = conteoPorCategoria[tab.id] || 0;
 
-        {/* Buscador de Ticker */}
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => {
+                    setTabActivo(tab.id);
+                    setPaginaActual(1);
+                    setFilaExpandida(null);
+                  }}
+                  className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all duration-150 cursor-pointer select-none whitespace-nowrap ${
+                    estaActiva
+                      ? 'bg-orange-600 text-white shadow-xs ring-1 ring-orange-500'
+                      : 'bg-white hover:bg-gray-100 text-gray-700 border border-gray-200 hover:border-gray-300'
+                  }`}
+                >
+                  <span>{tab.label}</span>
+                  <span
+                    className={`text-[10px] font-mono font-bold px-1.5 py-0.2 rounded-full ${
+                      estaActiva
+                        ? 'bg-orange-700/90 text-orange-50'
+                        : 'bg-gray-100 text-gray-500 border border-gray-200'
+                    }`}
+                  >
+                    {cantidad}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Buscador de Ticker dentro de la pestaña activa */}
         <div className="relative w-full sm:w-64">
           <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
           <input
             type="text"
             value={busqueda}
-            onChange={e => setBusqueda(e.target.value)}
-            placeholder="Buscar activo (SPY, BTC, AAPL)..."
-            className="w-full pl-8 pr-3 py-1.5 rounded-lg border border-gray-200 bg-white text-xs font-mono text-gray-900 placeholder:text-gray-400 focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500"
+            onChange={e => {
+              setBusqueda(e.target.value);
+              setPaginaActual(1);
+            }}
+            placeholder={`Buscar en ${tabActivo}...`}
+            className="w-full pl-8 pr-3 py-1.5 rounded-lg border border-gray-200 bg-white text-xs font-mono text-gray-900 placeholder:text-gray-400 focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500 shadow-2xs"
           />
         </div>
       </div>
@@ -362,11 +495,12 @@ export default function ScreenerDataGrid({
           <tbody className="divide-y divide-gray-100 bg-white">
             {datosPaginados.length > 0 ? (
               datosPaginados.map(item => {
-
+                const esInsuficiente = item.status === 'INSUFFICIENT_DATA' || item.condorScore === null || item.condorScore === undefined;
                 const estiloScore = obtenerEstiloScore(item.condorScore);
                 const esFilaAbierta = filaExpandida === item.activo;
-                const rsi = Number(item.rsi || 50);
-                const macd = item.macd || {};
+                const tienePrecio = item.precioActual !== null && item.precioActual !== undefined && item.precioActual > 0;
+                const rsi = typeof item.rsi === 'number' ? item.rsi : null;
+                const macd = item.macd || null;
 
                 return (
                   <React.Fragment key={item.activo}>
@@ -395,70 +529,109 @@ export default function ScreenerDataGrid({
 
                       {/* 2. Precio Actual */}
                       <td className="py-3 px-4 text-right">
-                        <div className="font-bold text-gray-900 text-sm">
-                          {formatearPrecio(item.precioActual, item.moneda, item.activo)}
-                        </div>
-                        <div className="text-[10px] font-mono">
-                          <span className={item.variacion24h >= 0 ? 'text-emerald-600 font-bold' : 'text-rose-600 font-bold'}>
-                            {item.variacion24h >= 0 ? `+${item.variacion24h}%` : `${item.variacion24h}%`}
-                          </span>
-                        </div>
+                        {tienePrecio ? (
+                          <>
+                            <div className="font-bold text-gray-900 text-sm">
+                              {formatearPrecio(item.precioActual, item.moneda, item.activo)}
+                            </div>
+                            <div className="text-[10px] font-mono">
+                              <span className={item.variacion24h >= 0 ? 'text-emerald-600 font-bold' : 'text-rose-600 font-bold'}>
+                                {item.variacion24h >= 0 ? `+${item.variacion24h}%` : `${item.variacion24h}%`}
+                              </span>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div className="font-bold text-gray-400 text-sm">—</div>
+                            <div className="text-[10px] font-mono text-gray-400">Sin cotización</div>
+                          </>
+                        )}
                       </td>
 
-                      {/* 3. CondorScore con barra visual de progreso */}
+                      {/* 3. CondorScore con barra visual de progreso o cartel Calculando... */}
                       <td className="py-3 px-4">
-                        <div className="flex items-center gap-3">
-                          <div className="w-12 text-right">
-                            <span className={`text-base font-black font-mono ${estiloScore.texto}`}>
-                              {item.condorScore}
+                        {esInsuficiente ? (
+                          <div className="flex items-center gap-2">
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-mono font-bold bg-amber-50 text-amber-800 border border-amber-200 shadow-2xs">
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+                              Calculando...
                             </span>
-                            <span className="text-[10px] text-gray-400 font-medium">/100</span>
+                            <span className="text-[10px] text-gray-400 font-mono">
+                              ({item.totalMuestras || 0}/14 reg.)
+                            </span>
                           </div>
+                        ) : (
+                          <div className="flex items-center gap-3">
+                            <div className="w-12 text-right">
+                              <span className={`text-base font-black font-mono ${estiloScore.texto}`}>
+                                {item.condorScore}
+                              </span>
+                              <span className="text-[10px] text-gray-400 font-medium">/100</span>
+                            </div>
 
-                          {/* Barra de progreso visual con gradiente */}
-                          <div className="flex-1 bg-gray-100 rounded-full h-2.5 overflow-hidden border border-gray-200">
-                            <div
-                              className={`h-full rounded-full bg-gradient-to-r ${estiloScore.gradiente} transition-all duration-500`}
-                              style={{ width: `${Math.max(6, item.condorScore)}%` }}
-                            />
+                            {/* Barra de progreso visual con gradiente */}
+                            <div className="flex-1 bg-gray-100 rounded-full h-2.5 overflow-hidden border border-gray-200">
+                              <div
+                                className={`h-full rounded-full bg-gradient-to-r ${estiloScore.gradiente} transition-all duration-500`}
+                                style={{ width: `${Math.max(6, item.condorScore)}%` }}
+                              />
+                            </div>
                           </div>
-                        </div>
+                        )}
                       </td>
 
                       {/* 4. RSI (14) */}
                       <td className="py-3 px-4 text-center">
-                        <div className="inline-flex flex-col items-center">
-                          <span className="font-extrabold text-gray-900 text-xs">
-                            {rsi.toFixed(1)}
-                          </span>
-                          <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded mt-0.5 border ${
-                            rsi < 30
-                              ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                              : rsi > 70
-                                ? 'bg-rose-100 text-rose-800 border-rose-300'
-                                : 'bg-gray-100 text-gray-600 border-gray-200'
-                          }`}>
-                            {rsi < 30 ? 'SOBREVENTA' : rsi > 70 ? 'SOBRECOMPRA' : 'NEUTRAL'}
-                          </span>
-                        </div>
+                        {rsi !== null ? (
+                          <div className="inline-flex flex-col items-center">
+                            <span className="font-extrabold text-gray-900 text-xs">
+                              {rsi.toFixed(1)}
+                            </span>
+                            <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded mt-0.5 border ${
+                              rsi < 30
+                                ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                : rsi > 70
+                                  ? 'bg-rose-100 text-rose-800 border-rose-300'
+                                  : 'bg-gray-100 text-gray-600 border-gray-200'
+                            }`}>
+                              {rsi < 30 ? 'SOBREVENTA' : rsi > 70 ? 'SOBRECOMPRA' : 'NEUTRAL'}
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="inline-flex flex-col items-center">
+                            <span className="font-extrabold text-gray-400 text-xs">—</span>
+                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded mt-0.5 bg-gray-100 text-gray-500 border border-gray-200">
+                              CALCULANDO...
+                            </span>
+                          </div>
+                        )}
                       </td>
 
                       {/* 5. MACD */}
                       <td className="py-3 px-4 text-center">
-                        <div className="inline-flex flex-col items-center">
-                          <span className={`font-bold text-xs ${
-                            macd.histogram > 0 ? 'text-emerald-600' : 'text-rose-600'
-                          }`}>
-                            {macd.histogram !== undefined ? (macd.histogram > 0 ? `+${macd.histogram}` : macd.histogram) : '0.00'}
-                          </span>
-                          <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded mt-0.5 ${
-                            macd.trend === 'BULLISH'
-                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                              : 'bg-rose-50 text-rose-700 border border-rose-200'
-                          }`}>
-                            {macd.trend || 'NEUTRAL'}
-                          </span>
-                        </div>
+                        {macd && macd.histogram !== undefined ? (
+                          <div className="inline-flex flex-col items-center">
+                            <span className={`font-bold text-xs ${
+                              macd.histogram > 0 ? 'text-emerald-600' : 'text-rose-600'
+                            }`}>
+                              {macd.histogram > 0 ? `+${macd.histogram}` : macd.histogram}
+                            </span>
+                            <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded mt-0.5 ${
+                              macd.trend === 'BULLISH'
+                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                : 'bg-rose-50 text-rose-700 border border-rose-200'
+                            }`}>
+                              {macd.trend || 'NEUTRAL'}
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="inline-flex flex-col items-center">
+                            <span className="font-bold text-xs text-gray-400">—</span>
+                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded mt-0.5 bg-gray-100 text-gray-500 border border-gray-200">
+                              CALCULANDO...
+                            </span>
+                          </div>
+                        )}
                       </td>
 
                       {/* 6. Señal */}
@@ -480,7 +653,7 @@ export default function ScreenerDataGrid({
                                 </span>
                               </div>
                               <span className="text-[11px] font-mono text-gray-500">
-                                Muestras analizadas: {item.totalMuestras || 100} registros
+                                Muestras analizadas: {item.totalMuestras || 0} registros
                               </span>
                             </div>
 
@@ -515,26 +688,51 @@ export default function ScreenerDataGrid({
                   </React.Fragment>
                 );
               })
-            ) : (
+            ) : datosCategoriaActiva.length === 0 ? (
+              /* ESTADO VACÍO ELEGANTE: Si la categoría aún no tiene datos desde Supabase */
               <tr>
-                <td colSpan={6} className="py-12 text-center text-gray-500">
-                  <div className="flex flex-col items-center justify-center gap-2">
-                    <AlertTriangle className="w-6 h-6 text-orange-500" />
-                    <p className="text-sm font-bold text-gray-800">
-                      Sin datos en el Screener Cuantitativo
+                <td colSpan={6} className="py-14 text-center text-gray-500">
+                  <div className="flex flex-col items-center justify-center gap-2.5">
+                    <div className="w-12 h-12 rounded-full bg-amber-50 flex items-center justify-center border border-amber-200">
+                      <Clock className="w-6 h-6 text-amber-600 animate-pulse" />
+                    </div>
+                    <p className="text-sm font-bold text-gray-900">
+                      Esperando datos de mercado para esta categoría...
                     </p>
-                    <p className="text-xs text-gray-400 max-w-sm">
-                      Ejecuta el escaneo para calcular en vivo el RSI(14), MACD y Bandas de Bollinger sobre el universo de activos.
+                    <p className="text-xs text-gray-400 max-w-md leading-relaxed font-mono">
+                      Los activos correspondientes a <span className="font-bold text-gray-700">{tabActivo}</span> se sincronizarán en tiempo real con las próximas cotizaciones del swarm.
                     </p>
                     {onEjecutarAnalisis && (
                       <button
                         onClick={onEjecutarAnalisis}
                         disabled={ejecutandoInsight}
-                        className="mt-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-orange-600 hover:bg-orange-700 text-white transition active:scale-95 shadow-xs"
+                        className="mt-2 flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-orange-600 hover:bg-orange-700 text-white transition active:scale-95 shadow-xs cursor-pointer"
                       >
-                        Iniciar Escaneo Cuantitativo
+                        <Zap className={`w-3.5 h-3.5 ${ejecutandoInsight ? 'animate-spin' : ''}`} />
+                        <span>{ejecutandoInsight ? 'Sincronizando...' : 'Escanear Mercado Ahora'}</span>
                       </button>
                     )}
+                  </div>
+                </td>
+              </tr>
+            ) : (
+              /* ESTADO SIN COINCIDENCIAS POR BÚSQUEDA */
+              <tr>
+                <td colSpan={6} className="py-12 text-center text-gray-500">
+                  <div className="flex flex-col items-center justify-center gap-2">
+                    <AlertTriangle className="w-6 h-6 text-orange-500" />
+                    <p className="text-sm font-bold text-gray-800">
+                      No se encontraron activos para "{busqueda}" en {tabActivo}
+                    </p>
+                    <p className="text-xs text-gray-400">
+                      Intenta buscando por otro símbolo o limpia el filtro de búsqueda.
+                    </p>
+                    <button
+                      onClick={() => setBusqueda('')}
+                      className="mt-2 px-3 py-1 rounded-lg text-xs font-semibold bg-gray-100 hover:bg-gray-200 text-gray-700 transition cursor-pointer"
+                    >
+                      Limpiar búsqueda
+                    </button>
                   </div>
                 </td>
               </tr>
@@ -553,12 +751,13 @@ export default function ScreenerDataGrid({
               {' - '}
               {esModoTodos ? totalFilas : Math.min(paginaActual * Number(filasPorPagina), totalFilas)}
             </strong>{' '}
-            de <strong className="text-gray-800">{totalFilas}</strong> activos analizados
+            de <strong className="text-gray-800">{totalFilas}</strong> activos en{' '}
+            <span className="text-orange-700 font-bold">{tabActivo}</span>
           </span>
           <span className="text-gray-300">•</span>
           <span>Filas por página:</span>
           <div className="flex items-center gap-1 bg-gray-200/80 p-0.5 rounded-lg border border-gray-300/80">
-            {[15, 30, 'todos'].map(opcion => (
+            {[10, 20, 'todos'].map(opcion => (
               <button
                 key={opcion}
                 onClick={() => {
@@ -619,4 +818,3 @@ export default function ScreenerDataGrid({
     </section>
   );
 }
-

@@ -6,17 +6,17 @@
  * Descripción:
  * Función Serverless HTTP que se ejecuta a demanda (o vía Vercel Cron).
  * Recolecta cotizaciones en tiempo real integrando APIs públicas de:
- *  - CriptoYa (agregador multi-exchange con Lemon Cash, Buenbit, Fiwind, Ripio, Belo, etc.)
+ *  - CriptoYa (agregador multi-exchange dinámico: Lemon, Buenbit, Fiwind, Ripio, Belo, etc.)
  *  - Bitso (API pública directa v3)
- *  - Binance (API pública directa Spot bookTicker)
+ *  - Binance (API pública directa Spot ARS y conversión líquida Spot USDT/ARS)
  *  - Lemon Cash (API dedicada)
  * 
  * Inteligencia Matemática:
- * Calcula el Arbitraje y Spread para cada activo (USDT, BTC, ETH):
+ * Calcula el Arbitraje y Spread para cada activo del universo Top Cripto (20 activos):
  *  - Identifica el exchange con menor precio para comprar (Ask)
  *  - Identifica el exchange con mayor precio para vender (Bid)
- *  - Calcula el porcentaje de ganancia neta (Spread) deduciendo comisiones operativas.
- *  - Almacena el resultado consolidado en Supabase (spread, exchange_compra, exchange_venta).
+ *  - Deduce comisiones operativas y calcula spread neto.
+ *  - Almacena el resultado consolidado en Supabase (cotizaciones_historicas).
  * ==============================================================================
  */
 
@@ -37,7 +37,6 @@ const CONFIG = {
   TIMEOUT_MS: 5000,
   ACTIVOS: TOP_CRIPTO_DEFAULT,
   TABLA_SUPABASE: 'cotizaciones_historicas',
-  // Fricción operativa y comisiones de mercado estimadas (0.5% compra + 0.5% venta = 1.0% total)
   COMISION_COMPRA_PCT: 0.005,
   COMISION_VENTA_PCT: 0.005,
   EXCHANGES_CRIPTOYA: [
@@ -50,15 +49,43 @@ const CONFIG = {
     { id: 'satoshitango', nombre: 'SatoshiTango' },
     { id: 'tiendacrypto', nombre: 'TiendaCrypto' },
     { id: 'letsbit',      nombre: 'Let\'sBit' },
-    { id: 'decrypto',     nombre: 'Decrypto' }
+    { id: 'decrypto',     nombre: 'Decrypto' },
+    { id: 'cryptomkt',    nombre: 'CryptoMkt' }
   ]
 };
 
 /**
+ * Consulta la cotización de referencia USDT/ARS para conversión de pares altcoin.
+ */
+let cacheUsdtRate = { ask: 1615, bid: 1614, timestamp: 0 };
+async function obtenerTasaUsdtArs(signal) {
+  const ahora = Date.now();
+  if (ahora - cacheUsdtRate.timestamp < 30000 && cacheUsdtRate.ask > 0) {
+    return cacheUsdtRate;
+  }
+  try {
+    const res = await fetch('https://api.binance.com/api/v3/ticker/bookTicker?symbol=USDTARS', { signal });
+    if (res.ok) {
+      const data = await res.json();
+      const ask = parseFloat(data.askPrice);
+      const bid = parseFloat(data.bidPrice);
+      if (!isNaN(ask) && !isNaN(bid) && ask > 0) {
+        cacheUsdtRate = { ask, bid, timestamp: ahora };
+        return cacheUsdtRate;
+      }
+    }
+  } catch {
+    // Si falla, usar caché o valor por defecto
+  }
+  return cacheUsdtRate;
+}
+
+/**
  * Consulta la API pública de Bitso (v3).
- * Soporta USDT, BTC, ETH, SOL, XRP y altcoins.
+ * Soporta USDT, BTC, ETH, SOL, XRP, ADA, AVAX, DOGE, LTC, SHIB y POL.
  */
 async function consultarBitso(moneda, signal) {
+  const m = moneda.toUpperCase() === 'MATIC' ? 'POL' : moneda.toUpperCase();
   const mapBooks = {
     USDT: 'usdt_ars',
     BTC: 'btc_ars',
@@ -69,9 +96,11 @@ async function consultarBitso(moneda, signal) {
     AVAX: 'avax_ars',
     DOGE: 'doge_ars',
     LTC: 'ltc_ars',
-    SHIB: 'shib_ars'
+    SHIB: 'shib_ars',
+    POL: 'pol_ars',
+    MATIC: 'pol_ars'
   };
-  const book = mapBooks[moneda.toUpperCase()];
+  const book = mapBooks[m];
   if (!book) return null;
 
   try {
@@ -94,18 +123,16 @@ async function consultarBitso(moneda, signal) {
       }
     }
   } catch {
-    // Falla controlada sin bloquear el flujo principal
+    // Falla controlada
   }
   return null;
 }
 
 /**
- * Consulta la API pública de Binance (Spot bookTicker).
- * Soporta USDT/ARS, BTC/ARS y ETH/ARS.
+ * Consulta la API pública de Binance (Spot bookTicker) en par ARS directo.
  */
-async function consultarBinance(moneda, signal) {
+async function consultarBinanceDirectoARS(moneda, signal) {
   const symbol = `${moneda.toUpperCase()}ARS`;
-
   try {
     const res = await fetch(`https://api.binance.com/api/v3/ticker/bookTicker?symbol=${symbol}`, {
       headers: { 'Accept': 'application/json' },
@@ -118,9 +145,45 @@ async function consultarBinance(moneda, signal) {
       const bid = parseFloat(data.bidPrice);
       if (!isNaN(ask) && !isNaN(bid) && ask > 0 && bid > 0) {
         return {
-          exchange: 'Binance (Spot)',
+          exchange: 'Binance (Spot ARS)',
           precio_compra: ask,
           precio_venta: bid,
+          moneda: moneda.toUpperCase()
+        };
+      }
+    }
+  } catch {
+    // Falla controlada
+  }
+  return null;
+}
+
+/**
+ * Fallback Spot Binance en USD/USDT convertido a ARS para altcoins que no tienen par directo en ARS.
+ * Permite liquidar ATOM, NEAR, ARB, OP, INJ, etc.
+ */
+async function consultarBinanceSpotUSDT(moneda, usdtRate, signal) {
+  if (moneda.toUpperCase() === 'USDT') return null;
+  const m = moneda.toUpperCase() === 'MATIC' ? 'POL' : moneda.toUpperCase();
+  const symbol = `${m}USDT`;
+
+  try {
+    const res = await fetch(`https://api.binance.com/api/v3/ticker/bookTicker?symbol=${symbol}`, {
+      headers: { 'Accept': 'application/json' },
+      signal
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data?.askPrice && data?.bidPrice) {
+      const askUsd = parseFloat(data.askPrice);
+      const bidUsd = parseFloat(data.bidPrice);
+      if (!isNaN(askUsd) && !isNaN(bidUsd) && askUsd > 0 && bidUsd > 0) {
+        const askArs = askUsd * (usdtRate.ask || 1615);
+        const bidArs = bidUsd * (usdtRate.bid || 1614);
+        return {
+          exchange: 'Binance (Spot USDT/ARS)',
+          precio_compra: Number(askArs.toFixed(2)),
+          precio_venta: Number(bidArs.toFixed(2)),
           moneda: moneda.toUpperCase()
         };
       }
@@ -135,8 +198,9 @@ async function consultarBinance(moneda, signal) {
  * Consulta la API de Lemon Cash para obtener cotizaciones directas.
  */
 async function consultarLemonCash(moneda, signal) {
+  const m = moneda.toUpperCase() === 'MATIC' ? 'pol' : moneda.toLowerCase();
   try {
-    const res = await fetch(`https://criptoya.com/api/lemoncash/${moneda.toLowerCase()}/ars`, {
+    const res = await fetch(`https://criptoya.com/api/lemoncash/${m}/ars`, {
       headers: { 'Accept': 'application/json' },
       signal
     });
@@ -157,10 +221,13 @@ async function consultarLemonCash(moneda, signal) {
 }
 
 /**
- * Consulta consolidada en CriptoYa con fallback a consultas atómicas.
+ * Consulta dinámica en CriptoYa con resolución de todos los exchanges devueltos.
+ * Incluye mapeo de MATIC a POL (migración de Polygon).
  */
 async function consultarCriptoYa(moneda, signal) {
-  const endpoint = `https://criptoya.com/api/${moneda.toLowerCase()}/ars`;
+  // Mapeo automático de ticker migrado MATIC -> POL
+  const symbolToQuery = moneda.toUpperCase() === 'MATIC' ? 'pol' : moneda.toLowerCase();
+  const endpoint = `https://criptoya.com/api/${symbolToQuery}/ars`;
   const cotizaciones = [];
 
   try {
@@ -175,11 +242,13 @@ async function consultarCriptoYa(moneda, signal) {
 
     if (respuesta.ok) {
       const data = await respuesta.json();
-      CONFIG.EXCHANGES_CRIPTOYA.forEach(exchange => {
-        const cotizacion = data[exchange.id];
-        if (cotizacion && typeof cotizacion.ask === 'number' && typeof cotizacion.bid === 'number') {
+      // Recorrer dinámicamente todas las claves del payload para no omitir ningún exchange
+      Object.entries(data).forEach(([key, cotizacion]) => {
+        if (cotizacion && typeof cotizacion.ask === 'number' && typeof cotizacion.bid === 'number' && cotizacion.ask > 0 && cotizacion.bid > 0) {
+          const configItem = CONFIG.EXCHANGES_CRIPTOYA.find(e => e.id.toLowerCase() === key.toLowerCase());
+          const nombreExchange = configItem ? configItem.nombre : (key.charAt(0).toUpperCase() + key.slice(1));
           cotizaciones.push({
-            exchange: exchange.nombre,
+            exchange: nombreExchange,
             precio_compra: cotizacion.ask,
             precio_venta: cotizacion.bid,
             moneda: moneda.toUpperCase()
@@ -189,12 +258,12 @@ async function consultarCriptoYa(moneda, signal) {
       return cotizaciones;
     }
   } catch {
-    // Si falla el endpoint global, continuar con fallback
+    // Fallback a consultas directas si el endpoint global falla
   }
 
-  // Fallback atómico exchange por exchange
+  // Fallback atómico exchange por exchange si el agregado falló
   const promesas = CONFIG.EXCHANGES_CRIPTOYA.map(async exchange => {
-    const res = await fetch(`https://criptoya.com/api/${exchange.id}/${moneda.toLowerCase()}/ars`, {
+    const res = await fetch(`https://criptoya.com/api/${exchange.id}/${symbolToQuery}/ars`, {
       headers: {
         'Accept': 'application/json',
         'User-Agent': 'CondorFi-VercelServerless/5.0'
@@ -203,7 +272,9 @@ async function consultarCriptoYa(moneda, signal) {
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const d = await res.json();
-    if (typeof d.ask !== 'number' || typeof d.bid !== 'number') throw new Error('Par no listado');
+    if (typeof d.ask !== 'number' || typeof d.bid !== 'number' || d.ask <= 0 || d.bid <= 0) {
+      throw new Error('Par no listado o precio inválido');
+    }
     return {
       exchange: exchange.nombre,
       precio_compra: d.ask,
@@ -224,17 +295,18 @@ async function consultarCriptoYa(moneda, signal) {
 
 /**
  * Recolecta todas las cotizaciones disponibles para una moneda desde todas las fuentes integradas:
- * CriptoYa (múltiples exchanges locales), Bitso, Binance y Lemon Cash.
+ * CriptoYa (múltiples exchanges dinámicos), Bitso, Binance (Spot ARS y Spot USDT/ARS) y Lemon Cash.
  */
-async function recolectarCotizacionesParaMoneda(moneda) {
+async function recolectarCotizacionesParaMoneda(moneda, usdtRate) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), CONFIG.TIMEOUT_MS);
 
   try {
-    const [criptoYaList, bitsoQuote, binanceQuote, lemonQuote] = await Promise.allSettled([
+    const [criptoYaList, bitsoQuote, binanceDirecto, binanceUsdt, lemonQuote] = await Promise.allSettled([
       consultarCriptoYa(moneda, controller.signal),
       consultarBitso(moneda, controller.signal),
-      consultarBinance(moneda, controller.signal),
+      consultarBinanceDirectoARS(moneda, controller.signal),
+      consultarBinanceSpotUSDT(moneda, usdtRate, controller.signal),
       consultarLemonCash(moneda, controller.signal)
     ]);
 
@@ -243,8 +315,9 @@ async function recolectarCotizacionesParaMoneda(moneda) {
 
     if (criptoYaList.status === 'fulfilled' && Array.isArray(criptoYaList.value)) {
       criptoYaList.value.forEach(item => {
-        if (!mapaExchanges.has(item.exchange.toLowerCase())) {
-          mapaExchanges.add(item.exchange.toLowerCase());
+        const idNorm = item.exchange.toLowerCase();
+        if (!mapaExchanges.has(idNorm)) {
+          mapaExchanges.add(idNorm);
           todas.push(item);
         }
       });
@@ -257,10 +330,17 @@ async function recolectarCotizacionesParaMoneda(moneda) {
       }
     }
 
-    if (binanceQuote.status === 'fulfilled' && binanceQuote.value) {
-      if (!mapaExchanges.has('binance (spot)')) {
-        mapaExchanges.add('binance (spot)');
-        todas.push(binanceQuote.value);
+    if (binanceDirecto.status === 'fulfilled' && binanceDirecto.value) {
+      if (!mapaExchanges.has('binance (spot ars)')) {
+        mapaExchanges.add('binance (spot ars)');
+        todas.push(binanceDirecto.value);
+      }
+    }
+
+    if (binanceUsdt.status === 'fulfilled' && binanceUsdt.value) {
+      if (!mapaExchanges.has('binance (spot usdt/ars)')) {
+        mapaExchanges.add('binance (spot usdt/ars)');
+        todas.push(binanceUsdt.value);
       }
     }
 
@@ -279,10 +359,6 @@ async function recolectarCotizacionesParaMoneda(moneda) {
 
 /**
  * Calculadora Matemática de Spread y Arbitraje.
- * Por cada moneda:
- * 1. Identifica el precio más bajo para comprar (Ask) y su exchange.
- * 2. Identifica el precio más alto para vender (Bid) y su exchange.
- * 3. Calcula el porcentaje de ganancia neta (Spread) deduciendo comisiones operativas.
  */
 function calcularSpread(cotizaciones, moneda) {
   if (!cotizaciones || cotizaciones.length === 0) return null;
@@ -293,6 +369,25 @@ function calcularSpread(cotizaciones, moneda) {
   );
 
   if (validas.length === 0) return null;
+
+  // Si solo hay 1 exchange disponible, tomar como referencia base sin arbitraje cruzado
+  if (validas.length === 1) {
+    const unico = validas[0];
+    const ask = unico.precio_compra;
+    const bid = unico.precio_venta;
+    const spreadBruto = Number((((bid - ask) / ask) * 100).toFixed(4));
+    return {
+      timestamp: new Date().toISOString(),
+      moneda: moneda.toUpperCase(),
+      exchange_compra: unico.exchange,
+      precio_compra: Number(ask.toFixed(4)),
+      exchange_venta: unico.exchange,
+      precio_venta: Number(bid.toFixed(4)),
+      spread: spreadBruto,
+      spread_bruto: spreadBruto,
+      spread_neto_pesos: Number((bid - ask).toFixed(2))
+    };
+  }
 
   // 1. Precio más bajo para comprar (Ask) y exchange
   const mejorCompra = validas.reduce((min, c) => 
@@ -342,6 +437,7 @@ export default async function handler(req, res) {
   const oportunidadesParaInsertar = [];
   const resumenOportunidades = {};
   const metricasRecoleccion = {};
+  const fallosPorActivo = [];
 
   try {
     const query = req.query || {};
@@ -362,16 +458,24 @@ export default async function handler(req, res) {
 
     monedasAConsultar = Array.from(new Set(monedasAConsultar.map(m => m.trim().toUpperCase()).filter(Boolean)));
 
+    // Obtener tasa de referencia USDT/ARS para la conversión de altcoins
+    const usdtRate = await obtenerTasaUsdtArs();
+
     // Recolectar cotizaciones y calcular spread por cada activo concurrentemente con Promise.allSettled
     const promesasActivos = monedasAConsultar.map(async moneda => {
-      const cotizaciones = await recolectarCotizacionesParaMoneda(moneda);
-      const oportunidad = calcularSpread(cotizaciones, moneda);
-      return { moneda, cotizaciones, oportunidad };
+      try {
+        const cotizaciones = await recolectarCotizacionesParaMoneda(moneda, usdtRate);
+        const oportunidad = calcularSpread(cotizaciones, moneda);
+        return { moneda, cotizaciones, oportunidad };
+      } catch (errActivo) {
+        throw new Error(`Error en activo ${moneda}: ${errActivo.message}`);
+      }
     });
 
     const resultadosSettled = await Promise.allSettled(promesasActivos);
 
-    resultadosSettled.forEach(item => {
+    resultadosSettled.forEach((item, idx) => {
+      const monedaSolicitada = monedasAConsultar[idx];
       if (item.status === 'fulfilled' && item.value) {
         const { moneda, cotizaciones, oportunidad } = item.value;
         metricasRecoleccion[moneda] = {
@@ -381,7 +485,6 @@ export default async function handler(req, res) {
         if (oportunidad) {
           resumenOportunidades[moneda] = oportunidad;
 
-          // Objeto enriquecido con spread, exchange_compra y exchange_venta para Supabase
           oportunidadesParaInsertar.push({
             timestamp: oportunidad.timestamp,
             moneda: oportunidad.moneda,
@@ -392,7 +495,15 @@ export default async function handler(req, res) {
             precio_venta: oportunidad.precio_venta,
             spread: oportunidad.spread
           });
+        } else {
+          const motivo = `Sin cotizaciones válidas disponibles (${cotizaciones.length} exchanges consultados)`;
+          console.error(`Fallo en activo cripto [${monedaSolicitada}]:`, motivo);
+          fallosPorActivo.push({ moneda: monedaSolicitada, motivo });
         }
+      } else {
+        const motivo = item.reason?.message || String(item.reason || 'Rechazo no controlado');
+        console.error(`Fallo en activo cripto [${monedaSolicitada}]:`, motivo);
+        fallosPorActivo.push({ moneda: monedaSolicitada, motivo });
       }
     });
 
@@ -406,7 +517,7 @@ export default async function handler(req, res) {
         .insert(oportunidadesParaInsertar)
         .select();
 
-      // Fallback defensivo si la tabla aún no cuenta con las columnas spread / exchange_compra / exchange_venta
+      // Fallback defensivo si la tabla aún no cuenta con las columnas avanzadas
       if (error && (error.code === 'PGRST204' || error.code === '42703')) {
         console.warn('[Supabase] Columnas avanzadas no encontradas en el esquema. Aplicando guardado compatible en "exchange"...');
         const fallbackRegistros = oportunidadesParaInsertar.map(op => ({
@@ -430,6 +541,8 @@ export default async function handler(req, res) {
 
       if (!error && data) {
         registrosInsertados = data.length;
+      } else if (error) {
+        console.error('[Supabase Cripto Insert] Error en bulk insert:', error.message);
       }
     }
 
@@ -441,6 +554,8 @@ export default async function handler(req, res) {
       duracionMs,
       totalSolicitados: monedasAConsultar.length,
       oportunidadesCalculadas: oportunidadesParaInsertar.length,
+      fallos: fallosPorActivo.length,
+      fallosDetalle: fallosPorActivo,
       registrosInsertados,
       oportunidades: resumenOportunidades,
       metricasRecoleccion

@@ -8,7 +8,7 @@ function apiDevServerPlugin() {
       server.middlewares.use(async (req, res, next) => {
         if (req.url && req.url.startsWith('/api/')) {
           const pathname = req.url.split('?')[0].replace(/^\/api\//, '');
-          const allowed = ['generar-insights', 'scrapper-tradfi', 'bot'];
+          const allowed = ['generar-insights', 'scrapper-tradfi', 'bot', 'backtest'];
           if (allowed.includes(pathname)) {
             try {
               const url = new URL(req.url, 'http://localhost');

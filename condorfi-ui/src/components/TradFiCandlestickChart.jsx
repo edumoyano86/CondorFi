@@ -64,20 +64,51 @@ export const TICKERS_CONFIG = [
 ];
 
 
-export default function TradFiCandlestickChart({ registrosTradfi = [] }) {
+const INDICES_TICKERS = ['^MERV', 'SPY', 'QQQ', 'DIA', 'IWM'];
+const BONOS_TICKERS = ['AL30.BA', 'GD30.BA', 'TLT'];
+
+export const clasificarTickerChart = (t) => {
+  if (BONOS_TICKERS.includes(t.ticker)) return 'Bonos';
+  if (INDICES_TICKERS.includes(t.ticker)) return 'Índices';
+  if (t.categoria === 'Cripto') return 'Criptomonedas';
+  return 'Acciones';
+};
+
+export default function TradFiCandlestickChart({ registrosTradfi = [], filtroCategoria = null }) {
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
 
-  const [tickerActivo, setTickerActivo] = useState('SPY');
+  const categoriaNormalizada = useMemo(() => {
+    if (!filtroCategoria) return null;
+    const c = String(filtroCategoria).toLowerCase().trim();
+    if (c.includes('bono')) return 'Bonos';
+    if (c.includes('accion')) return 'Acciones';
+    if (c.includes('indice') || c.includes('índice')) return 'Índices';
+    if (c.includes('cripto')) return 'Criptomonedas';
+    return filtroCategoria;
+  }, [filtroCategoria]);
+
+  const tickersDisponibles = useMemo(() => {
+    if (!categoriaNormalizada) return TICKERS_CONFIG;
+    return TICKERS_CONFIG.filter(t => clasificarTickerChart(t) === categoriaNormalizada);
+  }, [categoriaNormalizada]);
+
+  const [tickerActivo, setTickerActivo] = useState(tickersDisponibles[0]?.ticker || 'SPY');
   const [ohlcHover, setOhlcHover] = useState(null);
   const [temporalidad, setTemporalidad] = useState('15M');
   const [pantallaCompleta, setPantallaCompleta] = useState(false);
 
+  useEffect(() => {
+    if (tickersDisponibles.length > 0 && !tickersDisponibles.some(t => t.ticker === tickerActivo)) {
+      setTickerActivo(tickersDisponibles[0].ticker);
+    }
+  }, [tickersDisponibles, tickerActivo]);
+
   // Información del ticker activo
   const tickerInfo = useMemo(() => {
-    return TICKERS_CONFIG.find(t => t.ticker === tickerActivo) || TICKERS_CONFIG[0];
-  }, [tickerActivo]);
+    return tickersDisponibles.find(t => t.ticker === tickerActivo) || tickersDisponibles[0] || TICKERS_CONFIG[0];
+  }, [tickersDisponibles, tickerActivo]);
 
   // Generación y normalización de datos OHLC para Lightweight Charts
   const candlestickData = useMemo(() => {
@@ -283,50 +314,62 @@ export default function TradFiCandlestickChart({ registrosTradfi = [] }) {
               onChange={(e) => setTickerActivo(e.target.value)}
               className="pl-3 pr-8 py-2 rounded-xl border border-gray-300 bg-white text-xs font-mono font-bold text-gray-900 shadow-xs focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 cursor-pointer"
             >
-              <optgroup label="🇺🇸 Wall Street (Índices & Tech)">
-                {TICKERS_CONFIG.filter(t => t.categoria === 'Wall Street').map(t => (
-                  <option key={t.ticker} value={t.ticker}>
-                    {t.ticker} • {t.nombre} ({t.moneda})
-                  </option>
-                ))}
-              </optgroup>
-              <optgroup label="🇦🇷 Argentina & Merval (BYMA)">
-                {TICKERS_CONFIG.filter(t => t.categoria === 'Merval').map(t => (
-                  <option key={t.ticker} value={t.ticker}>
-                    {t.ticker} • {t.nombre} ({t.moneda})
-                  </option>
-                ))}
-              </optgroup>
-              <optgroup label="🏛️ Bonos Soberanos & Renta Fija">
-                {TICKERS_CONFIG.filter(t => t.categoria === 'Bonos').map(t => (
-                  <option key={t.ticker} value={t.ticker}>
-                    {t.ticker} • {t.nombre} ({t.moneda})
-                  </option>
-                ))}
-              </optgroup>
-              <optgroup label="🪙 Criptoactivos Top (ARS)">
-                {TICKERS_CONFIG.filter(t => t.categoria === 'Cripto').map(t => (
-                  <option key={t.ticker} value={t.ticker}>
-                    {t.ticker} • {t.nombre} ({t.moneda})
-                  </option>
-                ))}
-              </optgroup>
+              {categoriaNormalizada ? (
+                <optgroup label={`Activos en ${categoriaNormalizada}`}>
+                  {tickersDisponibles.map(t => (
+                    <option key={t.ticker} value={t.ticker}>
+                      {t.ticker} • {t.nombre} ({t.moneda})
+                    </option>
+                  ))}
+                </optgroup>
+              ) : (
+                <>
+                  <optgroup label="🇺🇸 Wall Street (Índices & Tech)">
+                    {TICKERS_CONFIG.filter(t => t.categoria === 'Wall Street').map(t => (
+                      <option key={t.ticker} value={t.ticker}>
+                        {t.ticker} • {t.nombre} ({t.moneda})
+                      </option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="🇦🇷 Argentina & Merval (BYMA)">
+                    {TICKERS_CONFIG.filter(t => t.categoria === 'Merval').map(t => (
+                      <option key={t.ticker} value={t.ticker}>
+                        {t.ticker} • {t.nombre} ({t.moneda})
+                      </option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="🏛️ Bonos Soberanos & Renta Fija">
+                    {TICKERS_CONFIG.filter(t => t.categoria === 'Bonos').map(t => (
+                      <option key={t.ticker} value={t.ticker}>
+                        {t.ticker} • {t.nombre} ({t.moneda})
+                      </option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="🪙 Criptoactivos Top (ARS)">
+                    {TICKERS_CONFIG.filter(t => t.categoria === 'Cripto').map(t => (
+                      <option key={t.ticker} value={t.ticker}>
+                        {t.ticker} • {t.nombre} ({t.moneda})
+                      </option>
+                    ))}
+                  </optgroup>
+                </>
+              )}
             </select>
           </div>
 
-          {/* Accesos rápidos (Pill Badges) para los activos insignia */}
+          {/* Accesos rápidos (Pill Badges) adaptados a la categoría filtrada */}
           <div className="hidden sm:flex items-center gap-1">
-            {['SPY', '^MERV', 'NVDA', 'AL30.BA', 'BTC'].map((quickTicker) => (
+            {tickersDisponibles.slice(0, 6).map((item) => (
               <button
-                key={quickTicker}
-                onClick={() => setTickerActivo(quickTicker)}
+                key={item.ticker}
+                onClick={() => setTickerActivo(item.ticker)}
                 className={`px-2 py-1 rounded-md text-[11px] font-mono font-bold transition cursor-pointer ${
-                  tickerActivo === quickTicker
+                  tickerActivo === item.ticker
                     ? 'bg-gray-900 text-white shadow-2xs'
                     : 'bg-gray-200/80 hover:bg-gray-300 text-gray-700'
                 }`}
               >
-                {quickTicker}
+                {item.ticker}
               </button>
             ))}
           </div>
