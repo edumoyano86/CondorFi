@@ -13,6 +13,7 @@
 
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import { createChart, CandlestickSeries, ColorType, CrosshairMode } from 'lightweight-charts';
+import { useCurrency, convertirMonto } from '../context/CurrencyContext';
 import {
   Maximize2,
   Minimize2,
@@ -78,6 +79,7 @@ export default function TradFiCandlestickChart({ registrosTradfi = [], filtroCat
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
+  const { monedaGlobal, tasaCambio, formatearPrecio: formatPrecioCurrency } = useCurrency();
 
   const categoriaNormalizada = useMemo(() => {
     if (!filtroCategoria) return null;
@@ -158,13 +160,22 @@ export default function TradFiCandlestickChart({ registrosTradfi = [], filtroCat
       });
     }
 
+    const monedaNativa = tickerInfo.moneda || 'USD';
+    const puntosConvertidos = puntos.map(p => ({
+      time: p.time,
+      open: Number(convertirMonto(p.open, monedaNativa, monedaGlobal, tasaCambio).toFixed(monedaGlobal === 'ARS' ? 0 : 2)),
+      high: Number(convertirMonto(p.high, monedaNativa, monedaGlobal, tasaCambio).toFixed(monedaGlobal === 'ARS' ? 0 : 2)),
+      low: Number(convertirMonto(p.low, monedaNativa, monedaGlobal, tasaCambio).toFixed(monedaGlobal === 'ARS' ? 0 : 2)),
+      close: Number(convertirMonto(p.close, monedaNativa, monedaGlobal, tasaCambio).toFixed(monedaGlobal === 'ARS' ? 0 : 2))
+    }));
+
     // Ordenamiento estricto ascendente y deduplicación temporal obligatoria para Lightweight Charts
-    const datosOrdenados = puntos
+    const datosOrdenados = puntosConvertidos
       .sort((a, b) => a.time - b.time)
       .filter((item, index, self) => index === 0 || item.time > self[index - 1].time);
 
     return datosOrdenados;
-  }, [registrosTradfi, tickerActivo, tickerInfo, temporalidad]);
+  }, [registrosTradfi, tickerActivo, tickerInfo, temporalidad, monedaGlobal, tasaCambio]);
 
   // Inicialización y ciclo de vida del gráfico de TradingView
   useEffect(() => {
@@ -285,18 +296,17 @@ export default function TradFiCandlestickChart({ registrosTradfi = [], filtroCat
     };
   }, [candlestickData, pantallaCompleta, tickerActivo]);
 
-  // Valores del HUD formateados
-  const ultimoPrecio = ohlcHover?.close || tickerInfo.base;
-  const precioOpen = ohlcHover?.open || tickerInfo.open;
+  // Valores del HUD formateados en la moneda global activa
+  const baseConvertida = convertirMonto(tickerInfo.base, tickerInfo.moneda, monedaGlobal, tasaCambio);
+  const openConvertido = convertirMonto(tickerInfo.open, tickerInfo.moneda, monedaGlobal, tasaCambio);
+  const ultimoPrecio = ohlcHover?.close ?? baseConvertida;
+  const precioOpen = ohlcHover?.open ?? openConvertido;
   const esPositivo = ultimoPrecio >= precioOpen;
   const deltaPct = precioOpen > 0 ? (((ultimoPrecio - precioOpen) / precioOpen) * 100).toFixed(2) : '0.00';
 
   const formatearValor = val => {
-    if (val === undefined || val === null) return '-';
-    if (tickerActivo === '^MERV') {
-      return `$${Math.round(val).toLocaleString('es-AR')}`;
-    }
-    return `$${Number(val).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    if (val === undefined || val === null || isNaN(val)) return '-';
+    return formatPrecioCurrency(val, monedaGlobal);
   };
 
   return (
@@ -443,8 +453,8 @@ export default function TradFiCandlestickChart({ registrosTradfi = [], filtroCat
             )}
             {esPositivo ? `+${deltaPct}%` : `${deltaPct}%`}
           </span>
-          <span className="text-[11px] text-gray-400 hidden md:inline">
-            {tickerInfo.moneda}
+          <span className="text-[11px] text-gray-400 hidden md:inline font-bold">
+            {monedaGlobal}
           </span>
         </div>
 

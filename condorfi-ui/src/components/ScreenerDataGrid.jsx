@@ -15,6 +15,7 @@
  */
 
 import React, { useState, useMemo, useEffect } from 'react';
+import { useCurrency } from '../context/CurrencyContext';
 import {
   ArrowUpDown,
   ArrowUp,
@@ -94,6 +95,9 @@ export default function ScreenerDataGrid({
   filtroCategoria = null
 }) {
   const categoriaNormalizada = useMemo(() => normalizarCategoria(filtroCategoria), [filtroCategoria]);
+  // Consumo del Motor Multidivisa Global (ARS / USD)
+  const { monedaGlobal, tasaCambio, formatearPrecio: formatPrecioCurrency } = useCurrency();
+
   // Estado activo de navegación modular (por defecto filtroCategoria o 'Criptomonedas')
   const [tabActivo, setTabActivo] = useState(categoriaNormalizada || 'Criptomonedas');
   const [columnaOrden, setColumnaOrden] = useState('condorScore');
@@ -304,10 +308,9 @@ export default function ScreenerDataGrid({
   };
 
   const formatearPrecio = (precio, moneda, ticker) => {
-    if (ticker === '^MERV' || moneda === 'ARS') {
-      return `$${Math.round(precio).toLocaleString('es-AR')}`;
-    }
-    return `$${Number(precio).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    if (precio === undefined || precio === null || isNaN(precio) || precio <= 0) return '-';
+    const nativa = moneda || (ticker === '^MERV' || (ticker && ticker.endsWith('.BA')) ? 'ARS' : 'USD');
+    return formatPrecioCurrency(precio, nativa);
   };
 
   return (
@@ -450,7 +453,7 @@ export default function ScreenerDataGrid({
                 onClick={() => manejarOrden('precioActual')}
                 className="py-3.5 px-4 text-right cursor-pointer hover:bg-gray-200/70 transition"
               >
-                <span>Precio Actual</span>
+                <span>Precio Actual ({monedaGlobal})</span>
                 {renderIconoOrden('precioActual')}
               </th>
 
@@ -665,15 +668,15 @@ export default function ScreenerDataGrid({
                               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 text-[11px] font-mono">
                                 <div className="p-2 rounded bg-gray-50 border border-gray-100">
                                   <span className="text-gray-400 block text-[10px]">Banda Sup (+2σ)</span>
-                                  <strong className="text-gray-800">${item.bollinger.upper}</strong>
+                                  <strong className="text-gray-800">{formatearPrecio(item.bollinger.upper, item.moneda, item.activo)}</strong>
                                 </div>
                                 <div className="p-2 rounded bg-gray-50 border border-gray-100">
                                   <span className="text-gray-400 block text-[10px]">Media SMA(20)</span>
-                                  <strong className="text-gray-800">${item.bollinger.middle}</strong>
+                                  <strong className="text-gray-800">{formatearPrecio(item.bollinger.middle, item.moneda, item.activo)}</strong>
                                 </div>
                                 <div className="p-2 rounded bg-gray-50 border border-gray-100">
                                   <span className="text-gray-400 block text-[10px]">Banda Inf (-2σ)</span>
-                                  <strong className="text-gray-800">${item.bollinger.lower}</strong>
+                                  <strong className="text-gray-800">{formatearPrecio(item.bollinger.lower, item.moneda, item.activo)}</strong>
                                 </div>
                                 <div className="p-2 rounded bg-gray-50 border border-gray-100">
                                   <span className="text-gray-400 block text-[10px]">Oscilador %B</span>

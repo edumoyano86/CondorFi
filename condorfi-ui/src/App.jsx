@@ -23,6 +23,7 @@ import Layout from './layouts/Layout';
 import Dashboard from './pages/Dashboard';
 import VistaMercado from './pages/VistaMercado';
 import Backtesting from './pages/Backtesting';
+import { CurrencyProvider } from './context/CurrencyContext';
 
 /**
  * Universo de 41 Activos Iniciales para el Screener (Fallback Instantáneo)
@@ -643,42 +644,44 @@ export default function App() {
   };
 
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route
-          path="/"
-          element={
-            <Layout
-              conectadoSupabase={conectadoSupabase}
-              alertasHabilitadas={alertasHabilitadas}
-              toggleAlertas={toggleAlertas}
-              fetchCotizacionesReales={fetchCotizacionesReales}
-              estaActualizando={estaActualizando}
-              ultimaSincronizacion={ultimaSincronizacion}
-              outletContext={outletContext}
-            />
-          }
-        >
-          {/* 1. Dashboard (Resumen General) */}
-          <Route index element={<Dashboard />} />
+    <CurrencyProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route
+            path="/"
+            element={
+              <Layout
+                conectadoSupabase={conectadoSupabase}
+                alertasHabilitadas={alertasHabilitadas}
+                toggleAlertas={toggleAlertas}
+                fetchCotizacionesReales={fetchCotizacionesReales}
+                estaActualizando={estaActualizando}
+                ultimaSincronizacion={ultimaSincronizacion}
+                outletContext={outletContext}
+              />
+            }
+          >
+            {/* 1. Dashboard (Resumen General) */}
+            <Route index element={<Dashboard />} />
 
-          {/* 2. Vistas Dedicadas de Mercado */}
-          <Route path="cripto" element={<VistaMercado categoria="cripto" />} />
-          <Route path="acciones" element={<VistaMercado categoria="acciones" />} />
-          <Route path="indices" element={<VistaMercado categoria="indices" />} />
-          <Route path="bonos" element={<VistaMercado categoria="bonos" />} />
+            {/* 2. Vistas Dedicadas de Mercado */}
+            <Route path="cripto" element={<VistaMercado categoria="cripto" />} />
+            <Route path="acciones" element={<VistaMercado categoria="acciones" />} />
+            <Route path="indices" element={<VistaMercado categoria="indices" />} />
+            <Route path="bonos" element={<VistaMercado categoria="bonos" />} />
 
-          {/* 3. Motor de Backtesting Institucional */}
-          <Route path="backtesting" element={<Backtesting />} />
-          <Route path="backtest" element={<Backtesting />} />
+            {/* 3. Motor de Backtesting Institucional */}
+            <Route path="backtesting" element={<Backtesting />} />
+            <Route path="backtest" element={<Backtesting />} />
 
-          {/* 4. Ruta dinámica para cualquier otra categoría */}
-          <Route path=":categoria" element={<VistaMercado />} />
+            {/* 4. Ruta dinámica para cualquier otra categoría */}
+            <Route path=":categoria" element={<VistaMercado />} />
 
-          {/* 5. Fallback a la raíz */}
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Route>
-      </Routes>
-    </BrowserRouter>
+            {/* 5. Fallback a la raíz */}
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Route>
+        </Routes>
+      </BrowserRouter>
+    </CurrencyProvider>
   );
 }

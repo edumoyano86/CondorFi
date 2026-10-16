@@ -23,6 +23,7 @@ import {
   CrosshairMode,
   createSeriesMarkers
 } from 'lightweight-charts';
+import { useCurrency, convertirMonto } from '../context/CurrencyContext';
 import {
   FlaskConical,
   Play,
@@ -74,12 +75,19 @@ const ACTIVOS_PREDETERMINADOS = [
 ];
 
 export default function Backtesting() {
+  // Motor Multidivisa Global (ARS / USD)
+  const { monedaGlobal, tasaCambio, formatearPrecio: formatPrecioCurrency } = useCurrency();
+
   // Estado del Formulario
   const [tickerSeleccionado, setTickerSeleccionado] = useState('SPY');
   const [mercado, setMercado] = useState('tradfi');
   const [periodo, setPeriodo] = useState('1y');
   const [capitalInicial, setCapitalInicial] = useState(10000);
   const [tickerPersonalizado, setTickerPersonalizado] = useState('');
+
+  // Parámetros Cuantitativos Dinámicos (Walk-Forward Strategy)
+  const [buyThreshold, setBuyThreshold] = useState(80);
+  const [sellThreshold, setSellThreshold] = useState(40);
 
   // Estado de Ejecución y Resultados
   const [cargando, setCargando] = useState(false);
@@ -106,7 +114,7 @@ export default function Backtesting() {
   };
 
   /**
-   * Ejecuta la simulación en el microservicio backend
+   * Ejecuta la simulación en el microservicio backend enviando parámetros dinámicos por req.body
    */
   const ejecutarSimulacion = useCallback(async () => {
     const tickerFinal = (tickerPersonalizado.trim() || tickerSeleccionado).toUpperCase();
@@ -116,14 +124,22 @@ export default function Backtesting() {
     setErrorSimulacion(null);
 
     try {
-      const params = new URLSearchParams({
+      const payload = {
         ticker: tickerFinal,
         mercado,
         periodo,
-        capital_inicial: capitalInicial.toString()
-      });
+        capital_inicial: capitalInicial,
+        buy_threshold: buyThreshold,
+        sell_threshold: sellThreshold
+      };
 
-      const res = await fetch(`/api/backtest?${params.toString()}`);
+      const res = await fetch('/api/backtest', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
       const data = await res.json();
 
       if (!res.ok || data.status !== 'success') {
@@ -137,7 +153,7 @@ export default function Backtesting() {
     } finally {
       setCargando(false);
     }
-  }, [tickerSeleccionado, tickerPersonalizado, mercado, periodo, capitalInicial]);
+  }, [tickerSeleccionado, tickerPersonalizado, mercado, periodo, capitalInicial, buyThreshold, sellThreshold]);
 
   // Ejecución inicial automática (SPY 1 año)
   useEffect(() => {
@@ -231,7 +247,16 @@ export default function Backtesting() {
       });
 
       candlestickSeriesRef.current = candlestickSeries;
-      candlestickSeries.setData(resultadoBacktest.velas);
+
+      const velasConvertidas = (resultadoBacktest.velas || []).map(v => ({
+        time: v.time,
+        open: Number(convertirMonto(v.open, 'USD', monedaGlobal, tasaCambio).toFixed(monedaGlobal === 'ARS' ? 0 : 2)),
+        high: Number(convertirMonto(v.high, 'USD', monedaGlobal, tasaCambio).toFixed(monedaGlobal === 'ARS' ? 0 : 2)),
+        low: Number(convertirMonto(v.low, 'USD', monedaGlobal, tasaCambio).toFixed(monedaGlobal === 'ARS' ? 0 : 2)),
+        close: Number(convertirMonto(v.close, 'USD', monedaGlobal, tasaCambio).toFixed(monedaGlobal === 'ARS' ? 0 : 2))
+      }));
+
+      candlestickSeries.setData(velasConvertidas);
 
       // Inyección de Markers de Compra y Venta (Fase 1 y 2)
       if (resultadoBacktest.markers && resultadoBacktest.markers.length > 0) {
@@ -243,7 +268,7 @@ export default function Backtesting() {
       }
 
       // HUD inicial con la última vela
-      const ultVela = resultadoBacktest.velas[resultadoBacktest.velas.length - 1];
+      const ultVela = velasConvertidas[velasConvertidas.length - 1] || resultadoBacktest.velas[resultadoBacktest.velas.length - 1];
       setHudVela(ultVela);
 
       // Suscripción al movimiento del cursor para HUD
@@ -270,14 +295,14 @@ export default function Backtesting() {
         lineWidth: 2.5,
         priceFormat: {
           type: 'price',
-          precision: 2,
-          minMove: 0.01
+          precision: monedaGlobal === 'ARS' ? 0 : 2,
+          minMove: monedaGlobal === 'ARS' ? 1 : 0.01
         }
       });
 
       const equityData = (resultadoBacktest.curvaEquity || []).map(p => ({
         time: p.time,
-        value: p.equity
+        value: Number(convertirMonto(p.equity, 'USD', monedaGlobal, tasaCambio).toFixed(monedaGlobal === 'ARS' ? 0 : 2))
       }));
 
       equitySeries.setData(equityData);
@@ -316,7 +341,7 @@ export default function Backtesting() {
         chartInstanceRef.current = null;
       }
     };
-  }, [resultadoBacktest, vistaGrafico]);
+  }, [resultadoBacktest, vistaGrafico, monedaGlobal, tasaCambio]);
 
   const metricas = resultadoBacktest?.metricas || null;
   const operaciones = resultadoBacktest?.historialOperaciones || [];
@@ -429,7 +454,7 @@ export default function Backtesting() {
               className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500 transition-colors"
             >
               <option value="tradfi">TradFi (Yahoo Finance)</option>
-              <option value="cripto">Cripto (Binance Public API)</option>
+              <option value="cripto">Cripto (Yahoo Finance / Par USD)</option>
             </select>
           </div>
 
@@ -451,7 +476,7 @@ export default function Backtesting() {
           {/* Capital Inicial */}
           <div>
             <label className="text-xs font-medium text-slate-400 block mb-1">
-              Capital Inicial (USD)
+              Capital Inicial ({monedaGlobal})
             </label>
             <div className="relative">
               <span className="absolute left-3 top-2.5 text-slate-500 text-sm">$</span>
@@ -489,6 +514,77 @@ export default function Backtesting() {
           </div>
         </div>
 
+        {/* FASE 2: Controles Deslizantes (Sliders) Paramétricos Dinámicos */}
+        <div className="pt-4 border-t border-slate-800/80">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Sliders className="w-4 h-4 text-indigo-400" />
+              <span className="text-xs font-bold font-mono text-slate-200 uppercase tracking-wider">
+                Parámetros Cuantitativos Dinámicos (Walk-Forward Strategy Optimization)
+              </span>
+            </div>
+            <span className="text-[11px] font-mono text-slate-400 hidden sm:inline">
+              Ajusta los umbrales de CondorScore para optimizar la estrategia
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5 p-4 rounded-xl bg-slate-950/80 border border-slate-800/90 shadow-inner">
+            {/* Slider 1: Umbral de Compra (Buy Threshold: 50 a 100) */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-medium text-slate-300 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                  <span>Umbral de Compra (Buy Threshold)</span>
+                </label>
+                <span className="px-2.5 py-0.5 rounded-md text-xs font-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40">
+                  Score &ge; {buyThreshold} pts
+                </span>
+              </div>
+              <input
+                type="range"
+                min="50"
+                max="100"
+                step="1"
+                value={buyThreshold}
+                onChange={(e) => setBuyThreshold(Number(e.target.value))}
+                className="w-full accent-emerald-500 cursor-pointer h-2 bg-slate-800 rounded-lg appearance-none"
+              />
+              <div className="flex justify-between text-[10px] font-mono text-slate-500">
+                <span>50 (Más agresivo)</span>
+                <span className="text-slate-400">Default: 80</span>
+                <span>100 (Ultra selectivo)</span>
+              </div>
+            </div>
+
+            {/* Slider 2: Umbral de Venta (Sell Threshold: 0 a 50) */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-medium text-slate-300 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-rose-400 animate-pulse"></span>
+                  <span>Umbral de Venta (Sell Threshold)</span>
+                </label>
+                <span className="px-2.5 py-0.5 rounded-md text-xs font-mono font-bold bg-rose-500/20 text-rose-400 border border-rose-500/40">
+                  Score &le; {sellThreshold} pts
+                </span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="50"
+                step="1"
+                value={sellThreshold}
+                onChange={(e) => setSellThreshold(Number(e.target.value))}
+                className="w-full accent-rose-500 cursor-pointer h-2 bg-slate-800 rounded-lg appearance-none"
+              />
+              <div className="flex justify-between text-[10px] font-mono text-slate-500">
+                <span>0 (Stop loss extremo)</span>
+                <span className="text-slate-400">Default: 40</span>
+                <span>50 (Salida rápida)</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
         {/* Mensaje de Error si ocurre */}
         {errorSimulacion && (
           <div className="mt-4 p-3 bg-rose-500/10 border border-rose-500/30 rounded-lg flex items-center gap-2 text-rose-300 text-xs">
@@ -521,14 +617,14 @@ export default function Backtesting() {
                 {metricas.roi >= 0 ? '+' : ''}{metricas.roi}%
               </span>
               <span className="text-xs font-mono text-slate-400">
-                ({metricas.gananciaNeta >= 0 ? '+' : ''}${metricas.gananciaNeta.toLocaleString()} USD)
+                ({metricas.gananciaNeta >= 0 ? '+' : ''}{formatPrecioCurrency(metricas.gananciaNeta, 'USD', { mostrarCodigo: true })})
               </span>
             </div>
 
             <div className="mt-3 pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs">
               <span className="text-slate-400">Capital Final:</span>
               <span className="font-mono font-bold text-white">
-                ${metricas.capitalFinal.toLocaleString()} USD
+                {formatPrecioCurrency(metricas.capitalFinal, 'USD', { mostrarCodigo: true })}
               </span>
             </div>
           </div>
@@ -684,21 +780,21 @@ export default function Backtesting() {
             </div>
             {hudVela.isEquity ? (
               <div className="flex items-center gap-1.5 text-slate-400">
-                <span>Equity Portafolio: <strong className="text-sky-400">${Number(hudVela.close).toLocaleString()} USD</strong></span>
+                <span>Equity Portafolio: <strong className="text-sky-400">{formatPrecioCurrency(hudVela.close, monedaGlobal, { mostrarCodigo: true })}</strong></span>
               </div>
             ) : (
               <>
                 <div className="flex items-center gap-1 text-slate-400">
-                  <span>O: <strong className="text-slate-200">${hudVela.open?.toFixed(2)}</strong></span>
+                  <span>O: <strong className="text-slate-200">{formatPrecioCurrency(hudVela.open, monedaGlobal)}</strong></span>
                 </div>
                 <div className="flex items-center gap-1 text-slate-400">
-                  <span>H: <strong className="text-emerald-400">${hudVela.high?.toFixed(2)}</strong></span>
+                  <span>H: <strong className="text-emerald-400">{formatPrecioCurrency(hudVela.high, monedaGlobal)}</strong></span>
                 </div>
                 <div className="flex items-center gap-1 text-slate-400">
-                  <span>L: <strong className="text-rose-400">${hudVela.low?.toFixed(2)}</strong></span>
+                  <span>L: <strong className="text-rose-400">{formatPrecioCurrency(hudVela.low, monedaGlobal)}</strong></span>
                 </div>
                 <div className="flex items-center gap-1 text-slate-400">
-                  <span>C: <strong className="text-white">${hudVela.close?.toFixed(2)}</strong></span>
+                  <span>C: <strong className="text-white">{formatPrecioCurrency(hudVela.close, monedaGlobal)}</strong></span>
                 </div>
               </>
             )}
@@ -706,11 +802,11 @@ export default function Backtesting() {
             <div className="ml-auto flex items-center gap-2">
               <span className="flex items-center gap-1 text-emerald-400">
                 <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
-                Flecha Verde: Compra (&ge; 80 pts)
+                Flecha Verde: Compra (&ge; {resultadoBacktest?.simulacion?.parametros?.buyThreshold ?? buyThreshold} pts)
               </span>
               <span className="flex items-center gap-1 text-rose-400 ml-2">
                 <span className="w-2 h-2 rounded-full bg-rose-500 inline-block" />
-                Flecha Roja: Venta (&le; 40 pts)
+                Flecha Roja: Venta (&le; {resultadoBacktest?.simulacion?.parametros?.sellThreshold ?? sellThreshold} pts)
               </span>
             </div>
           </div>
@@ -742,7 +838,7 @@ export default function Backtesting() {
             </h2>
           </div>
           <span className="text-xs text-slate-400 font-mono">
-            {resultadoBacktest?.simulacion?.ticker} | Capital: ${capitalInicial.toLocaleString()} USD
+            {resultadoBacktest?.simulacion?.ticker} | Capital: {formatPrecioCurrency(capitalInicial, 'USD', { mostrarCodigo: true })}
           </span>
         </div>
 
@@ -756,7 +852,7 @@ export default function Backtesting() {
                   Posición Activa al Cierre del Período
                 </span>
                 <span className="text-sm font-mono text-white">
-                  Comprada el {resultadoBacktest.posicionResidual.fechaEntrada} a ${resultadoBacktest.posicionResidual.precioCompra} &bull; Precio Actual: ${resultadoBacktest.posicionResidual.precioActual}
+                  Comprada el {resultadoBacktest.posicionResidual.fechaEntrada} a {formatPrecioCurrency(resultadoBacktest.posicionResidual.precioCompra, 'USD')} &bull; Precio Actual: {formatPrecioCurrency(resultadoBacktest.posicionResidual.precioActual, 'USD')}
                 </span>
               </div>
             </div>
@@ -766,7 +862,7 @@ export default function Backtesting() {
                 resultadoBacktest.posicionResidual.pnlNoRealizadoPct >= 0 ? 'text-emerald-400' : 'text-rose-400'
               }`}>
                 {resultadoBacktest.posicionResidual.pnlNoRealizadoPct >= 0 ? '+' : ''}
-                {resultadoBacktest.posicionResidual.pnlNoRealizadoPct}% (${resultadoBacktest.posicionResidual.pnlNoRealizadoUsd} USD)
+                {resultadoBacktest.posicionResidual.pnlNoRealizadoPct}% ({formatPrecioCurrency(resultadoBacktest.posicionResidual.pnlNoRealizadoUsd, 'USD', { mostrarCodigo: true })})
               </span>
             </div>
           </div>
@@ -774,7 +870,7 @@ export default function Backtesting() {
 
         {operaciones.length === 0 ? (
           <div className="text-center py-12 text-slate-500 text-sm">
-            No se generaron operaciones cerradas en el período seleccionado con los umbrales de CondorScore (&ge;80 compra / &le;40 venta).
+            No se generaron operaciones cerradas en el período seleccionado con los umbrales configurados (&ge;{resultadoBacktest?.simulacion?.parametros?.buyThreshold ?? buyThreshold} compra / &le;{resultadoBacktest?.simulacion?.parametros?.sellThreshold ?? sellThreshold} venta).
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -789,8 +885,8 @@ export default function Backtesting() {
                   <th className="py-3 px-3">Duración</th>
                   <th className="py-3 px-3">Resultado</th>
                   <th className="py-3 px-3">PnL (%)</th>
-                  <th className="py-3 px-3 text-right">PnL (USD)</th>
-                  <th className="py-3 px-3 text-right">Capital</th>
+                  <th className="py-3 px-3 text-right">PnL ({monedaGlobal})</th>
+                  <th className="py-3 px-3 text-right">Capital ({monedaGlobal})</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60">
@@ -803,9 +899,9 @@ export default function Backtesting() {
                     >
                       <td className="py-3 px-3 text-slate-500 font-bold">{op.id}</td>
                       <td className="py-3 px-3 text-slate-300">{op.fechaEntrada}</td>
-                      <td className="py-3 px-3 font-semibold text-emerald-400">${op.precioCompra.toLocaleString()}</td>
+                      <td className="py-3 px-3 font-semibold text-emerald-400">{formatPrecioCurrency(op.precioCompra, 'USD')}</td>
                       <td className="py-3 px-3 text-slate-300">{op.fechaSalida}</td>
-                      <td className="py-3 px-3 font-semibold text-rose-400">${op.precioVenta.toLocaleString()}</td>
+                      <td className="py-3 px-3 font-semibold text-rose-400">{formatPrecioCurrency(op.precioVenta, 'USD')}</td>
                       <td className="py-3 px-3 text-slate-400">{op.duracionDias} días</td>
                       <td className="py-3 px-3">
                         <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
@@ -824,10 +920,10 @@ export default function Backtesting() {
                       <td className={`py-3 px-3 text-right font-bold ${
                         esGanador ? 'text-emerald-400' : 'text-rose-400'
                       }`}>
-                        {esGanador ? '+' : ''}${op.pnlUsd.toLocaleString()}
+                        {esGanador ? '+' : ''}{formatPrecioCurrency(op.pnlUsd, 'USD')}
                       </td>
                       <td className="py-3 px-3 text-right text-white font-semibold">
-                        ${op.capitalResultante.toLocaleString()}
+                        {formatPrecioCurrency(op.capitalResultante, 'USD')}
                       </td>
                     </tr>
                   );

@@ -15,6 +15,7 @@
 import React from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import condorLogo from '../assets/condorfi-logo.png';
+import { useCurrency } from '../context/CurrencyContext';
 import {
   LayoutDashboard,
   Coins,
@@ -88,6 +89,7 @@ export default function Layout({
   outletContext = {}
 }) {
   const location = useLocation();
+  const { monedaGlobal, setMonedaGlobal, tasaCambio } = useCurrency();
 
   // Título dinámico para el Header según la ruta actual
   const obtenerTituloRuta = () => {
@@ -273,6 +275,48 @@ export default function Layout({
 
           {/* Acciones Rápidas del Header */}
           <div className="flex items-center gap-2.5">
+            {/* Switcher Multidivisa Estilo Bloomberg Terminal */}
+            <div className="flex items-center gap-2">
+              <div className="flex items-center bg-slate-900 border border-slate-700/80 rounded-lg p-0.5 shadow-xs font-mono">
+                <button
+                  type="button"
+                  onClick={() => setMonedaGlobal('ARS')}
+                  className={`px-2.5 py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
+                    monedaGlobal === 'ARS'
+                      ? 'bg-amber-500 text-slate-950 shadow-xs'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                  title="Visualizar precios en Pesos Argentinos (ARS)"
+                >
+                  ARS
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMonedaGlobal('USD')}
+                  className={`px-2.5 py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
+                    monedaGlobal === 'USD'
+                      ? 'bg-emerald-500 text-slate-950 shadow-xs'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                  title="Visualizar precios en Dólares Estadounidenses (USD)"
+                >
+                  USD
+                </button>
+              </div>
+
+              {/* FX Rate Pill (Binance USDT/ARS) */}
+              <div
+                className="hidden xl:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-50 border border-slate-200 text-[11px] font-mono text-slate-600 shadow-2xs"
+                title="Tipo de cambio Binance USDT/ARS en tiempo real"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span className="text-slate-400">USDT/ARS:</span>
+                <strong className="text-slate-800 font-bold">
+                  ${tasaCambio ? tasaCambio.toLocaleString('es-AR', { maximumFractionDigits: 1 }) : '---'}
+                </strong>
+              </div>
+            </div>
+
             {/* Toggle de Alertas Sonoras y Push */}
             <button
               onClick={toggleAlertas}

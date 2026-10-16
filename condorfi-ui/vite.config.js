@@ -13,9 +13,28 @@ function apiDevServerPlugin() {
             try {
               const url = new URL(req.url, 'http://localhost');
               const query = Object.fromEntries(url.searchParams.entries());
+
+              // Parsear req.body para peticiones POST / PUT en Vite Dev Server
+              let body = {};
+              if (req.method === 'POST' || req.method === 'PUT') {
+                const buffers = [];
+                for await (const chunk of req) {
+                  buffers.push(chunk);
+                }
+                const rawBody = Buffer.concat(buffers).toString('utf-8');
+                if (rawBody) {
+                  try {
+                    body = JSON.parse(rawBody);
+                  } catch {
+                    body = {};
+                  }
+                }
+              }
+
               const module = await server.ssrLoadModule(`/api/${pathname}.js`);
               const handler = module.default;
               req.query = query;
+              req.body = body;
               res.status = (code) => {
                 res.statusCode = code;
                 return res;

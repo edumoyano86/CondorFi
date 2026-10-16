@@ -7,6 +7,13 @@
  * Simula el rendimiento del algoritmo CondorScore sin sesgo de anticipación
  * (Look-Ahead Bias) sobre datos históricos diarios (1 a 2 años).
  * 
+ * Arquitectura de Datos:
+ * - Proveedor Unificado: Yahoo Finance (yahoo-finance2) para TradFi y Cripto.
+ * - Elimina por completo la dependencia de Binance API (evitando errores HTTP 451
+ *   por restricciones geográficas en IPs de Vercel US).
+ * - Mapper automático de tickers cripto a formato Yahoo Finance (ej. BTC -> BTC-USD).
+ * - Estandarización de velas OHLCV adaptadas a la estructura esperada por el Motor Quant.
+ * 
  * Parámetros recibidos (Query / Body):
  * - ticker: ej. 'SPY', 'BTC', 'QQQ', 'AAPL', 'ETH', 'SOL', '^MERV'
  * - mercado: 'tradfi' | 'cripto' (auto-detectado si se omite)
@@ -47,15 +54,20 @@ const yf = typeof YahooFinance === 'function'
 
 /**
  * Detecta automáticamente si el activo es Cripto o TradFi.
+ * @param {string} ticker Símbolo a evaluar
+ * @param {string} [mercadoParam] Parámetro explícito opcional
+ * @returns {'cripto' | 'tradfi'}
  */
-function inferirMercado(ticker, mercadoParam) {
+export function inferirMercado(ticker, mercadoParam) {
   if (mercadoParam) {
     const m = mercadoParam.toLowerCase().trim();
     if (m === 'cripto' || m === 'crypto') return 'cripto';
     if (m === 'tradfi' || m === 'acciones' || m === 'indices' || m === 'bonos') return 'tradfi';
   }
 
-  const clean = ticker.toUpperCase().replace('USDT', '').trim();
+  const raw = (ticker || '').toString().toUpperCase().trim();
+  const clean = raw.replace(/[-_/]?(USDT|BUSD|USD)$/i, '').trim();
+
   if (TOP_CRIPTO.includes(clean) || ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'DOGE', 'AVAX'].includes(clean)) {
     return 'cripto';
   }
@@ -64,66 +76,106 @@ function inferirMercado(ticker, mercadoParam) {
 }
 
 /**
- * Obtiene velas históricas de Binance para criptoactivos.
+ * Mapeador institucional de Tickers para Yahoo Finance.
+ * Transforma el símbolo ingresado al formato oficial esperado por Yahoo Finance:
+ * - Cripto: 'BTC' -> 'BTC-USD', 'ETH' -> 'ETH-USD', 'SOLUSDT' -> 'SOL-USD'
+ * - TradFi: Mantiene el ticker institucional saneado ('SPY', 'QQQ', '^MERV', 'GGAL.BA')
+ * 
+ * @param {string} ticker Símbolo solicitado por el usuario
+ * @param {'cripto' | 'tradfi'} mercado Mercado del activo
+ * @returns {string} Símbolo adaptado para Yahoo Finance
  */
-async function obtenerVelasBinance(ticker, periodo = '1y') {
-  const clean = ticker.toUpperCase().replace('USDT', '').trim();
-  const symbol = `${clean}USDT`;
-  const limit = periodo === '2y' ? 730 : 365;
-  const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1d&limit=${limit}`;
+export function mapearTickerYahoo(ticker, mercado) {
+  if (!ticker) return 'SPY';
+  const raw = ticker.toString().trim().toUpperCase();
 
-  const res = await fetch(url, { headers: { 'User-Agent': 'CondorFi-Quant/1.0' } });
-  if (!res.ok) {
-    throw new Error(`Binance API respondió con status ${res.status}: ${res.statusText}`);
+  if (mercado === 'cripto') {
+    // Si ya incluye el formato oficial de par en USD de Yahoo Finance
+    if (raw.endsWith('-USD')) {
+      return raw;
+    }
+
+    // Remueve sufijos y separadores típicos de exchanges (USDT, BUSD, USD, /, _, -)
+    const base = raw
+      .replace(/[-_/]?(USDT|BUSD|USD)$/i, '')
+      .replace(/[^A-Z0-9]/g, '');
+
+    return `${base || 'BTC'}-USD`;
   }
 
-  const klines = await res.json();
-  if (!Array.isArray(klines) || klines.length === 0) {
-    throw new Error(`No se obtuvieron velas históricas de Binance para ${symbol}`);
-  }
-
-  return klines.map(k => {
-    const d = new Date(k[0]);
-    return {
-      time: d.toISOString().split('T')[0],
-      open: parseFloat(k[1]),
-      high: parseFloat(k[2]),
-      low: parseFloat(k[3]),
-      close: parseFloat(k[4]),
-      volume: parseFloat(k[5])
-    };
-  });
+  // Mercado TradFi
+  return raw;
 }
 
 /**
- * Obtiene velas históricas de Yahoo Finance para activos TradFi.
+ * Normaliza valores numéricos preservando precisión decimal adecuada
+ * para activos de bajo valor unitario (como altcoins).
  */
-async function obtenerVelasYahoo(ticker, periodo = '1y') {
-  const cleanTicker = ticker.trim().toUpperCase();
+function ajustarPrecision(val) {
+  if (typeof val !== 'number' || isNaN(val)) return 0;
+  if (val >= 1) return Number(val.toFixed(4));
+  if (val >= 0.0001) return Number(val.toFixed(6));
+  return Number(val.toFixed(8));
+}
+
+/**
+ * Formatea precios para markers visuales en gráficos.
+ */
+function formatearPrecioMarker(p) {
+  if (p >= 1000) return p.toLocaleString(undefined, { maximumFractionDigits: 1 });
+  if (p >= 1) return p.toFixed(2);
+  return p.toFixed(4);
+}
+
+/**
+ * Proveedor Unificado de Datos Cuantitativos (Yahoo Finance).
+ * Extrae y estandariza velas históricas diarias (OHLCV) para TradFi y Criptomonedas.
+ * Reemplaza la dependencia de Binance API resolviendo el error HTTP 451 en servidores Vercel US.
+ * 
+ * @param {string} tickerYahoo Símbolo compatible con Yahoo Finance (ej. 'BTC-USD', 'SPY')
+ * @param {'1y' | '2y'} periodo Rango temporal
+ * @returns {Promise<Array<{time: string, open: number, high: number, low: number, close: number, volume: number}>>}
+ */
+async function obtenerVelasHistoricas(tickerYahoo, periodo = '1y') {
+  const cleanTicker = tickerYahoo.trim().toUpperCase();
   const end = new Date();
   const start = new Date();
   start.setFullYear(start.getFullYear() - (periodo === '2y' ? 2 : 1));
 
-  const rawCandles = await yf.historical(cleanTicker, {
-    period1: start.toISOString().split('T')[0],
-    period2: end.toISOString().split('T')[0],
-    interval: '1d'
-  });
+  let rawCandles;
+  try {
+    rawCandles = await yf.historical(cleanTicker, {
+      period1: start.toISOString().split('T')[0],
+      period2: end.toISOString().split('T')[0],
+      interval: '1d'
+    });
+  } catch (err) {
+    throw new Error(`Error consultando datos históricos de Yahoo Finance para ${cleanTicker}: ${err.message}`);
+  }
 
   if (!Array.isArray(rawCandles) || rawCandles.length === 0) {
     throw new Error(`No se obtuvieron velas históricas de Yahoo Finance para ${cleanTicker}`);
   }
 
+  // Filtrado y adaptación estructural al formato esperado por el Motor Quant
   return rawCandles
     .filter(c => c && c.date && c.close != null && !isNaN(c.close))
-    .map(c => ({
-      time: new Date(c.date).toISOString().split('T')[0],
-      open: Number(c.open || c.close),
-      high: Number(c.high || c.close),
-      low: Number(c.low || c.close),
-      close: Number(c.close),
-      volume: Number(c.volume || 0)
-    }));
+    .map(c => {
+      const close = Number(c.close);
+      const open = Number(c.open != null && !isNaN(c.open) ? c.open : close);
+      const high = Number(c.high != null && !isNaN(c.high) ? c.high : Math.max(open, close));
+      const low = Number(c.low != null && !isNaN(c.low) ? c.low : Math.min(open, close));
+      const volume = Number(c.volume != null && !isNaN(c.volume) ? c.volume : 0);
+
+      return {
+        time: new Date(c.date).toISOString().split('T')[0],
+        open,
+        high,
+        low,
+        close,
+        volume
+      };
+    });
 }
 
 /**
@@ -133,19 +185,38 @@ export default async function handler(req, res) {
   const inicioTimer = performance.now();
 
   try {
-    const params = { ...(req.query || {}), ...(req.body || {}) };
-    const ticker = (params.ticker || 'SPY').toString().toUpperCase().trim();
-    const mercado = inferirMercado(ticker, params.mercado);
+    // Soporte para body JSON (POST) y query params (GET)
+    let body = req.body || {};
+    if (typeof body === 'string') {
+      try {
+        body = JSON.parse(body);
+      } catch {}
+    } else if (!req.body && req.method === 'POST') {
+      try {
+        const buffers = [];
+        for await (const chunk of req) {
+          buffers.push(chunk);
+        }
+        const raw = Buffer.concat(buffers).toString('utf-8');
+        if (raw) body = JSON.parse(raw);
+      } catch {}
+    }
+
+    const params = { ...(req.query || {}), ...(body || {}) };
+    const tickerOriginal = (params.ticker || 'SPY').toString().toUpperCase().trim();
+    const mercado = inferirMercado(tickerOriginal, params.mercado);
     const capitalInicial = Math.max(100, Number(params.capital_inicial || params.capitalInicial || 10000));
     const periodo = (params.periodo || '1y').toString().toLowerCase();
 
-    // 1. Extracción histórica según mercado
-    let rawCandles = [];
-    if (mercado === 'cripto') {
-      rawCandles = await obtenerVelasBinance(ticker, periodo);
-    } else {
-      rawCandles = await obtenerVelasYahoo(ticker, periodo);
-    }
+    // Parámetros cuantitativos dinámicos (Walk-Forward Strategy Optimization)
+    const rawBuy = params.buy_threshold ?? params.buyThreshold;
+    const rawSell = params.sell_threshold ?? params.sellThreshold;
+    const buyThreshold = Math.min(100, Math.max(50, rawBuy !== undefined && !isNaN(Number(rawBuy)) ? Number(rawBuy) : 80));
+    const sellThreshold = Math.min(50, Math.max(0, rawSell !== undefined && !isNaN(Number(rawSell)) ? Number(rawSell) : 40));
+
+    // 1. Mapeo de ticker y extracción histórica unificada mediante Yahoo Finance
+    const tickerYahoo = mapearTickerYahoo(tickerOriginal, mercado);
+    const rawCandles = await obtenerVelasHistoricas(tickerYahoo, periodo);
 
     // 2. Normalización, deduplicación y ordenamiento temporal estricto (requerido por lightweight-charts)
     const candlesMap = new Map();
@@ -153,11 +224,11 @@ export default async function handler(req, res) {
       if (c && c.time && typeof c.close === 'number' && !isNaN(c.close) && c.close > 0) {
         candlesMap.set(c.time, {
           time: c.time,
-          open: Number(c.open.toFixed(4)),
-          high: Number(c.high.toFixed(4)),
-          low: Number(c.low.toFixed(4)),
-          close: Number(c.close.toFixed(4)),
-          volume: Number(c.volume.toFixed(2))
+          open: ajustarPrecision(c.open),
+          high: ajustarPrecision(c.high),
+          low: ajustarPrecision(c.low),
+          close: ajustarPrecision(c.close),
+          volume: Number(Number(c.volume || 0).toFixed(2))
         });
       }
     }
@@ -203,9 +274,9 @@ export default async function handler(req, res) {
 
       scoresHistoricos.push({ time: c.time, score: scoreActual, dictamen: dictamenActual });
 
-      // LÓGICA DE TRADING INSTITUCIONAL CONDORSCORE:
-      // A. COMPRA (All-In): Si CondorScore >= 80 (STRONG_BUY) y no hay posición abierta
-      if (scoreActual >= 80 && !posicionAbierta && cash > 0) {
+      // LÓGICA DE TRADING INSTITUCIONAL CONDORSCORE CON PARÁMETROS DINÁMICOS:
+      // A. COMPRA (All-In): Si CondorScore >= buyThreshold y no hay posición abierta
+      if (scoreActual >= buyThreshold && !posicionAbierta && cash > 0) {
         const precioCompra = c.close;
         const cantidad = cash / precioCompra;
         posicionAbierta = {
@@ -222,11 +293,11 @@ export default async function handler(req, res) {
           position: 'belowBar',
           color: '#10b981',
           shape: 'arrowUp',
-          text: `BUY @ $${precioCompra >= 1000 ? precioCompra.toLocaleString(undefined, { maximumFractionDigits: 1 }) : precioCompra.toFixed(2)}`
+          text: `BUY @ $${formatearPrecioMarker(precioCompra)}`
         });
       }
-      // B. VENTA: Si CondorScore <= 40 (SELL / STRONG_SELL) y hay posición abierta
-      else if (scoreActual <= 40 && posicionAbierta) {
+      // B. VENTA: Si CondorScore <= sellThreshold y hay posición abierta
+      else if (scoreActual <= sellThreshold && posicionAbierta) {
         const precioVenta = c.close;
         const valorVenta = posicionAbierta.cantidad * precioVenta;
         const pnlUsd = valorVenta - posicionAbierta.costoTotal;
@@ -241,8 +312,8 @@ export default async function handler(req, res) {
           id: trades.length + 1,
           fechaEntrada: posicionAbierta.fechaEntrada,
           fechaSalida: c.time,
-          precioCompra: Number(posicionAbierta.precioCompra.toFixed(4)),
-          precioVenta: Number(precioVenta.toFixed(4)),
+          precioCompra: ajustarPrecision(posicionAbierta.precioCompra),
+          precioVenta: ajustarPrecision(precioVenta),
           cantidad: Number(posicionAbierta.cantidad.toFixed(6)),
           pnlUsd: Number(pnlUsd.toFixed(2)),
           pnlPct: Number(pnlPct.toFixed(2)),
@@ -258,7 +329,7 @@ export default async function handler(req, res) {
           position: 'aboveBar',
           color: '#ef4444',
           shape: 'arrowDown',
-          text: `SELL @ $${precioVenta >= 1000 ? precioVenta.toLocaleString(undefined, { maximumFractionDigits: 1 }) : precioVenta.toFixed(2)}`
+          text: `SELL @ $${formatearPrecioMarker(precioVenta)}`
         });
 
         posicionAbierta = null;
@@ -296,8 +367,8 @@ export default async function handler(req, res) {
       posicionResidualInfo = {
         abierta: true,
         fechaEntrada: posicionAbierta.fechaEntrada,
-        precioCompra: Number(posicionAbierta.precioCompra.toFixed(4)),
-        precioActual: Number(ultimaVela.close.toFixed(4)),
+        precioCompra: ajustarPrecision(posicionAbierta.precioCompra),
+        precioActual: ajustarPrecision(ultimaVela.close),
         cantidad: Number(posicionAbierta.cantidad.toFixed(6)),
         pnlNoRealizadoUsd: Number(pnlNoRealizadoUsd.toFixed(2)),
         pnlNoRealizadoPct: Number(pnlNoRealizadoPct.toFixed(2))
@@ -329,9 +400,14 @@ export default async function handler(req, res) {
     return res.status(200).json({
       status: 'success',
       simulacion: {
-        ticker,
+        ticker: tickerOriginal,
+        tickerYahoo,
         mercado,
         periodo,
+        parametros: {
+          buyThreshold,
+          sellThreshold
+        },
         fechaInicio: primeraVela.time,
         fechaFin: ultimaVela.time,
         totalVelas: candles.length,
