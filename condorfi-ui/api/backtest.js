@@ -34,6 +34,9 @@
  */
 
 import YahooFinance from 'yahoo-finance2';
+import { supabase as supabaseCliente } from '../src/lib/supabase.js';
+import { createClient } from '@supabase/supabase-js';
+import { evaluarEstrategiaDinamica } from '../src/lib/strategyEvaluator.js';
 import {
   calcularRSI,
   calcularMACD,
@@ -75,10 +78,21 @@ export function inferirMercado(ticker, mercadoParam) {
   return 'tradfi';
 }
 
+const MAPEO_CRIPTO_YAHOO = {
+  TON: 'TON11419-USD',
+  SUI: 'SUI20947-USD',
+  APT: 'APT21794-USD',
+  ARB: 'ARB11841-USD',
+  RNDR: 'RENDER-USD',
+  RENDER: 'RENDER-USD',
+  MATIC: 'POL-USD',
+  POL: 'POL-USD'
+};
+
 /**
  * Mapeador institucional de Tickers para Yahoo Finance.
  * Transforma el símbolo ingresado al formato oficial esperado por Yahoo Finance:
- * - Cripto: 'BTC' -> 'BTC-USD', 'ETH' -> 'ETH-USD', 'SOLUSDT' -> 'SOL-USD'
+ * - Cripto: 'BTC' -> 'BTC-USD', 'SUI' -> 'SUI20947-USD', 'TON' -> 'TON11419-USD'
  * - TradFi: Mantiene el ticker institucional saneado ('SPY', 'QQQ', '^MERV', 'GGAL.BA')
  * 
  * @param {string} ticker Símbolo solicitado por el usuario
@@ -89,16 +103,20 @@ export function mapearTickerYahoo(ticker, mercado) {
   if (!ticker) return 'SPY';
   const raw = ticker.toString().trim().toUpperCase();
 
-  if (mercado === 'cripto') {
+  if (mercado === 'cripto' || TOP_CRIPTO.includes(raw) || MAPEO_CRIPTO_YAHOO[raw]) {
     // Si ya incluye el formato oficial de par en USD de Yahoo Finance
     if (raw.endsWith('-USD')) {
       return raw;
     }
 
-    // Remueve sufijos y separadores típicos de exchanges (USDT, BUSD, USD, /, _, -)
+    // Remueve sufijos y separadores típicos de exchanges (USDT, BUSD, USD, ARS, /, _, -)
     const base = raw
-      .replace(/[-_/]?(USDT|BUSD|USD)$/i, '')
+      .replace(/[-_/]?(USDT|BUSD|USD|ARS)$/i, '')
       .replace(/[^A-Z0-9]/g, '');
+
+    if (MAPEO_CRIPTO_YAHOO[base]) {
+      return MAPEO_CRIPTO_YAHOO[base];
+    }
 
     return `${base || 'BTC'}-USD`;
   }
@@ -214,6 +232,40 @@ export default async function handler(req, res) {
     const buyThreshold = Math.min(100, Math.max(50, rawBuy !== undefined && !isNaN(Number(rawBuy)) ? Number(rawBuy) : 80));
     const sellThreshold = Math.min(50, Math.max(0, rawSell !== undefined && !isNaN(Number(rawSell)) ? Number(rawSell) : 40));
 
+    // Inicialización defensiva de Supabase para consulta de estrategias personalizadas
+    let db = supabaseCliente;
+    if (!db) {
+      const rawUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+      const url = rawUrl ? rawUrl.replace(/\/rest\/v1\/?$/, '').replace(/\/$/, '') : null;
+      const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+      if (url && key) {
+        db = createClient(url, key);
+      }
+    }
+
+    // Detección de Estrategia Personalizada Activa (Query Builder)
+    let estrategiaActiva = null;
+    if (params.estrategia) {
+      try {
+        estrategiaActiva = typeof params.estrategia === 'string' ? JSON.parse(params.estrategia) : params.estrategia;
+      } catch (eParse) {
+        console.warn('[Motor Backtesting] Error parseando estrategia enviada en params:', eParse.message);
+      }
+    } else if (db) {
+      try {
+        const { data: estData } = await db
+          .from('estrategias_personalizadas')
+          .select('*')
+          .eq('activa', true)
+          .limit(1);
+        if (estData && estData.length > 0) {
+          estrategiaActiva = estData[0];
+        }
+      } catch (errEst) {
+        console.warn('[Motor Backtesting] Aviso consultando estrategias_personalizadas:', errEst.message);
+      }
+    }
+
     // 1. Mapeo de ticker y extracción histórica unificada mediante Yahoo Finance
     const tickerYahoo = mapearTickerYahoo(tickerOriginal, mercado);
     const rawCandles = await obtenerVelasHistoricas(tickerYahoo, periodo);
@@ -260,6 +312,9 @@ export default async function handler(req, res) {
       // En cada vela i, únicamente los datos hasta ese día están disponibles
       let scoreActual = 50;
       let dictamenActual = 'HOLD';
+      let señalCompra = false;
+      let señalVenta = false;
+      let motivoOperacion = '';
 
       // Período de warmup técnico (mínimo 26 períodos para MACD)
       if (i >= 26) {
@@ -270,13 +325,64 @@ export default async function handler(req, res) {
         const quant = calcularCondorScore({ rsi, bollinger, macd });
         scoreActual = quant.condorScore;
         dictamenActual = quant.dictamen;
+
+        // Evaluación con Estrategia Personalizada Dinámica si está activa
+        if (estrategiaActiva) {
+          const prevClose = i > 0 ? candles[i - 1].close : c.open;
+          const variacion24h = prevClose > 0 ? ((c.close - prevClose) / prevClose) * 100 : 0;
+
+          const datosVela = {
+            activo: tickerOriginal,
+            precioActual: c.close,
+            close: c.close,
+            open: c.open,
+            high: c.high,
+            low: c.low,
+            volume: c.volume,
+            rsi,
+            macd,
+            bollinger,
+            variacion24h,
+            condorScore: quant.condorScore,
+            dictamen: quant.dictamen
+          };
+
+          const reglas = estrategiaActiva.reglas_json || estrategiaActiva;
+          const evalDinamica = evaluarEstrategiaDinamica(datosVela, reglas);
+
+          if (evalDinamica.cumpleCompra) {
+            scoreActual = Math.max(quant.condorScore, 95);
+            dictamenActual = 'STRONG_BUY';
+            señalCompra = true;
+            motivoOperacion = `[${estrategiaActiva.nombre || 'Estrategia'}] Entrada confirmada`;
+          } else if (evalDinamica.cumpleVenta) {
+            scoreActual = Math.min(quant.condorScore, 15);
+            dictamenActual = 'STRONG_SELL';
+            señalVenta = true;
+            motivoOperacion = `[${estrategiaActiva.nombre || 'Estrategia'}] Salida confirmada`;
+          } else {
+            // Si la estrategia es un array plano de compra y no tiene reglas de venta explícitas,
+            // utilizamos el sellThreshold para stop de seguridad cuantitativo
+            if (Array.isArray(reglas) && quant.condorScore <= sellThreshold) {
+              señalVenta = true;
+              motivoOperacion = `Stop CondorScore <= ${sellThreshold}`;
+            }
+          }
+        } else {
+          // Lógica tradicional de CondorScore base con parámetros dinámicos
+          señalCompra = scoreActual >= buyThreshold;
+          señalVenta = scoreActual <= sellThreshold;
+          motivoOperacion = señalCompra
+            ? `CondorScore >= ${buyThreshold}`
+            : `CondorScore <= ${sellThreshold}`;
+        }
       }
 
       scoresHistoricos.push({ time: c.time, score: scoreActual, dictamen: dictamenActual });
 
-      // LÓGICA DE TRADING INSTITUCIONAL CONDORSCORE CON PARÁMETROS DINÁMICOS:
-      // A. COMPRA (All-In): Si CondorScore >= buyThreshold y no hay posición abierta
-      if (scoreActual >= buyThreshold && !posicionAbierta && cash > 0) {
+      // LÓGICA DE TRADING INSTITUCIONAL (All-In / Liquidación de Posición):
+      // A. COMPRA (All-In): Si se activa señal de compra y no hay posición abierta
+      if (señalCompra && !posicionAbierta && cash > 0) {
         const precioCompra = c.close;
         const cantidad = cash / precioCompra;
         posicionAbierta = {
@@ -284,7 +390,8 @@ export default async function handler(req, res) {
           precioCompra,
           cantidad,
           costoTotal: cash,
-          scoreEntrada: scoreActual
+          scoreEntrada: scoreActual,
+          motivo: motivoOperacion
         };
         cash = 0;
 
@@ -296,8 +403,8 @@ export default async function handler(req, res) {
           text: `BUY @ $${formatearPrecioMarker(precioCompra)}`
         });
       }
-      // B. VENTA: Si CondorScore <= sellThreshold y hay posición abierta
-      else if (scoreActual <= sellThreshold && posicionAbierta) {
+      // B. VENTA: Si se activa señal de venta y hay posición abierta
+      else if (señalVenta && posicionAbierta) {
         const precioVenta = c.close;
         const valorVenta = posicionAbierta.cantidad * precioVenta;
         const pnlUsd = valorVenta - posicionAbierta.costoTotal;
@@ -320,6 +427,8 @@ export default async function handler(req, res) {
           duracionDias,
           scoreEntrada: posicionAbierta.scoreEntrada,
           scoreSalida: scoreActual,
+          motivoSalida: motivoOperacion,
+          estrategia: estrategiaActiva ? (estrategiaActiva.nombre || 'Estrategia Personalizada') : 'CondorScore Base',
           resultado: pnlUsd >= 0 ? 'WIN' : 'LOSS',
           capitalResultante: Number(cash.toFixed(2))
         });
@@ -404,6 +513,12 @@ export default async function handler(req, res) {
         tickerYahoo,
         mercado,
         periodo,
+        estrategia: estrategiaActiva ? {
+          id: estrategiaActiva.id,
+          nombre: estrategiaActiva.nombre || 'Estrategia Personalizada',
+          descripcion: estrategiaActiva.descripcion,
+          activa: true
+        } : null,
         parametros: {
           buyThreshold,
           sellThreshold

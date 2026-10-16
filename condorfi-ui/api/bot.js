@@ -28,8 +28,12 @@ if (!globalThis.WebSocket) {
 }
 
 export const TOP_CRIPTO_DEFAULT = [
+  // Top 10 Core
   'USDT', 'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'AVAX', 'DOGE', 'LINK',
-  'DOT', 'MATIC', 'SHIB', 'LTC', 'UNI', 'ATOM', 'NEAR', 'ARB', 'OP', 'INJ'
+  // Layer 1, DeFi & Smart Contracts (11 - 20)
+  'DOT', 'MATIC', 'SHIB', 'LTC', 'UNI', 'ATOM', 'NEAR', 'ARB', 'OP', 'INJ',
+  // Expansión Institucional Top 30
+  'TON', 'TRX', 'BCH', 'ETC', 'FIL', 'LDO', 'APT', 'SUI', 'RNDR', 'XLM'
 ];
 
 // Configuración general del enjambre multi-activo y parámetros matemáticos
@@ -98,7 +102,10 @@ async function consultarBitso(moneda, signal) {
     LTC: 'ltc_ars',
     SHIB: 'shib_ars',
     POL: 'pol_ars',
-    MATIC: 'pol_ars'
+    MATIC: 'pol_ars',
+    BCH: 'bch_ars',
+    XLM: 'xlm_ars',
+    TRX: 'trx_ars'
   };
   const book = mapBooks[m];
   if (!book) return null;
@@ -164,7 +171,12 @@ async function consultarBinanceDirectoARS(moneda, signal) {
  */
 async function consultarBinanceSpotUSDT(moneda, usdtRate, signal) {
   if (moneda.toUpperCase() === 'USDT') return null;
-  const m = moneda.toUpperCase() === 'MATIC' ? 'POL' : moneda.toUpperCase();
+  const raw = moneda.toUpperCase();
+  const mapSymbols = {
+    MATIC: 'POL',
+    RNDR: 'RENDER'
+  };
+  const m = mapSymbols[raw] || raw;
   const symbol = `${m}USDT`;
 
   try {

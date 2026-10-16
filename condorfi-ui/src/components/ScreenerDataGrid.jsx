@@ -637,9 +637,31 @@ export default function ScreenerDataGrid({
                         )}
                       </td>
 
-                      {/* 6. Señal */}
+                      {/* 6. Señal & Convergencia MTFA */}
                       <td className="py-3 px-4 text-center">
-                        {renderBadgeDictamen(item.dictamen)}
+                        <div className="flex flex-col items-center gap-1">
+                          {renderBadgeDictamen(item.dictamen)}
+                          {item.alineacion_temporal && (
+                            <span className={`inline-flex items-center gap-1 text-[9px] font-mono font-bold px-1.5 py-0.5 rounded border ${
+                              item.alineacion_temporal === 'ALINEADO_ALCISTA'
+                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                : item.alineacion_temporal === 'ALINEADO_BAJISTA'
+                                ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                : item.alineacion_temporal === 'DIVERGENCIA'
+                                ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                : 'bg-slate-50 text-slate-600 border-slate-200'
+                            }`} title={`Alineación Multi-Temporal: ${item.alineacion_temporal}`}>
+                              <span className={`w-1.5 h-1.5 rounded-full ${
+                                item.alineacion_temporal === 'ALINEADO_ALCISTA' ? 'bg-emerald-500' :
+                                item.alineacion_temporal === 'ALINEADO_BAJISTA' ? 'bg-rose-500' :
+                                item.alineacion_temporal === 'DIVERGENCIA' ? 'bg-amber-500 animate-pulse' : 'bg-slate-400'
+                              }`} />
+                              {item.alineacion_temporal === 'ALINEADO_ALCISTA' ? '1d+1h Alcista' :
+                               item.alineacion_temporal === 'ALINEADO_BAJISTA' ? '1d+1h Bajista' :
+                               item.alineacion_temporal === 'DIVERGENCIA' ? 'Divergencia' : 'MTFA Neutral'}
+                            </span>
+                          )}
+                        </div>
                       </td>
                     </tr>
 
@@ -681,6 +703,53 @@ export default function ScreenerDataGrid({
                                 <div className="p-2 rounded bg-gray-50 border border-gray-100">
                                   <span className="text-gray-400 block text-[10px]">Oscilador %B</span>
                                   <strong className="text-emerald-700">{item.bollinger.percentB}</strong>
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Desglose Multi-Temporal MTFA (1d vs 1h) */}
+                            {item.mtfa && (
+                              <div className="pt-2 border-t border-gray-100 space-y-2">
+                                <div className="flex items-center justify-between text-[11px] font-mono">
+                                  <span className="font-bold text-gray-700">Análisis Multi-Temporal (MTFA):</span>
+                                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                    item.alineacion_temporal === 'ALINEADO_ALCISTA'
+                                      ? 'bg-emerald-100 text-emerald-800'
+                                      : item.alineacion_temporal === 'ALINEADO_BAJISTA'
+                                      ? 'bg-rose-100 text-rose-800'
+                                      : item.alineacion_temporal === 'DIVERGENCIA'
+                                      ? 'bg-amber-100 text-amber-800'
+                                      : 'bg-slate-100 text-slate-700'
+                                  }`}>
+                                    {item.alineacion_temporal}
+                                  </span>
+                                </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] font-mono">
+                                  <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200/80">
+                                    <div className="flex items-center justify-between mb-1">
+                                      <span className="font-bold text-slate-900">Vela Diaria 1d (Largo Plazo)</span>
+                                      <span className="text-[10px] font-bold text-blue-700 bg-blue-50 px-1.5 py-0.2 rounded border border-blue-200">
+                                        {item.mtfa.timeframe1d?.tendencia || 'MACRO'}
+                                      </span>
+                                    </div>
+                                    <div className="text-slate-600 text-[10px] space-y-0.5">
+                                      <div>RSI(14): <strong>{item.mtfa.timeframe1d?.rsi ?? '---'}</strong></div>
+                                      <div>MACD: <strong>{item.mtfa.timeframe1d?.macd?.trend || '---'}</strong> (Hist: {item.mtfa.timeframe1d?.macd?.histogram ?? '---'})</div>
+                                    </div>
+                                  </div>
+
+                                  <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200/80">
+                                    <div className="flex items-center justify-between mb-1">
+                                      <span className="font-bold text-slate-900">Vela Horaria 1h (Corto Plazo)</span>
+                                      <span className="text-[10px] font-bold text-purple-700 bg-purple-50 px-1.5 py-0.2 rounded border border-purple-200">
+                                        {item.mtfa.timeframe1h?.tendencia || 'MICRO'}
+                                      </span>
+                                    </div>
+                                    <div className="text-slate-600 text-[10px] space-y-0.5">
+                                      <div>RSI(14): <strong>{item.mtfa.timeframe1h?.rsi ?? '---'}</strong></div>
+                                      <div>MACD: <strong>{item.mtfa.timeframe1h?.macd?.trend || '---'}</strong> (Hist: {item.mtfa.timeframe1h?.macd?.histogram ?? '---'})</div>
+                                    </div>
+                                  </div>
                                 </div>
                               </div>
                             )}

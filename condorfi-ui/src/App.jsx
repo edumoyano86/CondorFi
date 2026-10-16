@@ -23,7 +23,12 @@ import Layout from './layouts/Layout';
 import Dashboard from './pages/Dashboard';
 import VistaMercado from './pages/VistaMercado';
 import Backtesting from './pages/Backtesting';
+import Portfolio from './pages/Portfolio';
+import StrategyBuilder from './pages/StrategyBuilder';
+import Auth from './pages/Auth';
+import ProtectedRoute from './components/ProtectedRoute';
 import { CurrencyProvider } from './context/CurrencyContext';
+import { AuthProvider } from './context/AuthContext';
 
 /**
  * Universo de 41 Activos Iniciales para el Screener (Fallback Instantáneo)
@@ -44,6 +49,7 @@ const DATOS_SCREENER_INICIAL = [
     exchangeVenta: 'Binance P2P',
     condorScore: 99,
     dictamen: 'STRONG_BUY',
+    alineacion_temporal: 'ALINEADO_ALCISTA',
     rsi: 40.9,
     macd: { macd: 338.9, signal: 210.4, histogram: 128.5, cruceAlcista: true, cruceBajista: false },
     bollinger: { sma: 3950000, upper: 4080000, lower: 3820000, bandwidth: 6.58, percentB: 0.36, tocaInferior: false, tocaSuperior: false },
@@ -63,6 +69,7 @@ const DATOS_SCREENER_INICIAL = [
     exchangeVenta: 'Fiwind',
     condorScore: 99,
     dictamen: 'STRONG_BUY',
+    alineacion_temporal: 'ALINEADO_ALCISTA',
     rsi: 40.1,
     macd: { macd: 0.23, signal: 0.15, histogram: 0.08, cruceAlcista: true, cruceBajista: false },
     bollinger: { sma: 2160, upper: 2240, lower: 2080, bandwidth: 7.41, percentB: 0.36, tocaInferior: false, tocaSuperior: false },
@@ -82,6 +89,7 @@ const DATOS_SCREENER_INICIAL = [
     exchangeVenta: 'Binance P2P',
     condorScore: 79,
     dictamen: 'BUY',
+    alineacion_temporal: 'ALINEADO_ALCISTA',
     rsi: 39.3,
     macd: { macd: -75.6, signal: -110.2, histogram: 34.6, cruceAlcista: true, cruceBajista: false },
     bollinger: { sma: 97500, upper: 102000, lower: 93000, bandwidth: 9.23, percentB: 0.32, tocaInferior: false, tocaSuperior: false },
@@ -101,6 +109,7 @@ const DATOS_SCREENER_INICIAL = [
     exchangeVenta: 'Fiwind',
     condorScore: 65,
     dictamen: 'BUY',
+    alineacion_temporal: 'ALINEADO_ALCISTA',
     rsi: 43.1,
     macd: { macd: 9207.2, signal: 8100.0, histogram: 1107.2, cruceAlcista: false, cruceBajista: false },
     bollinger: { sma: 132500000, upper: 136000000, lower: 129000000, bandwidth: 5.28, percentB: 0.39, tocaInferior: false, tocaSuperior: false },
@@ -120,6 +129,7 @@ const DATOS_SCREENER_INICIAL = [
     exchangeVenta: 'Binance P2P',
     condorScore: 75,
     dictamen: 'BUY',
+    alineacion_temporal: 'NEUTRAL',
     rsi: 45.2,
     macd: { macd: 2.1, signal: 1.4, histogram: 0.7, cruceAlcista: true, cruceBajista: false },
     bollinger: { sma: 1605, upper: 1625, lower: 1585, bandwidth: 2.49, percentB: 0.64, tocaInferior: false, tocaSuperior: false },
@@ -139,6 +149,7 @@ const DATOS_SCREENER_INICIAL = [
     exchangeVenta: 'Binance P2P',
     condorScore: 45,
     dictamen: 'HOLD',
+    alineacion_temporal: 'DIVERGENCIA',
     rsi: 43.2,
     macd: { macd: -9.9, signal: -5.2, histogram: -4.7, cruceAlcista: false, cruceBajista: false },
     bollinger: { sma: 169000, upper: 175000, lower: 163000, bandwidth: 7.10, percentB: 0.39, tocaInferior: false, tocaSuperior: false },
@@ -157,6 +168,7 @@ const DATOS_SCREENER_INICIAL = [
     variacion24h: -1.49,
     condorScore: 90,
     dictamen: 'STRONG_BUY',
+    alineacion_temporal: 'ALINEADO_ALCISTA',
     rsi: 19.8,
     macd: { macd: -0.96, signal: -0.45, histogram: -0.51, cruceAlcista: false, cruceBajista: false },
     bollinger: { sma: 735.00, upper: 748.00, lower: 722.00, bandwidth: 3.54, percentB: 0.19, tocaInferior: false, tocaSuperior: false },
@@ -173,6 +185,7 @@ const DATOS_SCREENER_INICIAL = [
     variacion24h: -0.99,
     condorScore: 90,
     dictamen: 'STRONG_BUY',
+    alineacion_temporal: 'ALINEADO_ALCISTA',
     rsi: 20.4,
     macd: { macd: -0.64, signal: -0.32, histogram: -0.32, cruceAlcista: false, cruceBajista: false },
     bollinger: { sma: 772.00, upper: 782.00, lower: 762.00, bandwidth: 2.59, percentB: 0.26, tocaInferior: false, tocaSuperior: false },
@@ -189,6 +202,7 @@ const DATOS_SCREENER_INICIAL = [
     variacion24h: -0.64,
     condorScore: 49,
     dictamen: 'HOLD',
+    alineacion_temporal: 'NEUTRAL',
     rsi: 34.8,
     macd: { macd: -782.4, signal: -520.1, histogram: -262.3, cruceAlcista: false, cruceBajista: false },
     bollinger: { sma: 2875000, upper: 2920000, lower: 2830000, bandwidth: 3.13, percentB: 0.23, tocaInferior: false, tocaSuperior: false },
@@ -644,44 +658,94 @@ export default function App() {
   };
 
   return (
-    <CurrencyProvider>
-      <BrowserRouter>
-        <Routes>
-          <Route
-            path="/"
-            element={
-              <Layout
-                conectadoSupabase={conectadoSupabase}
-                alertasHabilitadas={alertasHabilitadas}
-                toggleAlertas={toggleAlertas}
-                fetchCotizacionesReales={fetchCotizacionesReales}
-                estaActualizando={estaActualizando}
-                ultimaSincronizacion={ultimaSincronizacion}
-                outletContext={outletContext}
+    <AuthProvider>
+      <CurrencyProvider>
+        <BrowserRouter>
+          <Routes>
+            {/* Pantalla de Autenticación Institucional Independiente */}
+            <Route path="/auth" element={<Auth />} />
+            <Route path="/login" element={<Auth />} />
+
+            <Route
+              path="/"
+              element={
+                <Layout
+                  conectadoSupabase={conectadoSupabase}
+                  alertasHabilitadas={alertasHabilitadas}
+                  toggleAlertas={toggleAlertas}
+                  fetchCotizacionesReales={fetchCotizacionesReales}
+                  estaActualizando={estaActualizando}
+                  ultimaSincronizacion={ultimaSincronizacion}
+                  outletContext={outletContext}
+                />
+              }
+            >
+              {/* 1. Dashboard (Resumen General - Público) */}
+              <Route index element={<Dashboard />} />
+
+              {/* 2. Vistas Dedicadas de Mercado (Públicas) */}
+              <Route path="cripto" element={<VistaMercado categoria="cripto" />} />
+              <Route path="acciones" element={<VistaMercado categoria="acciones" />} />
+              <Route path="indices" element={<VistaMercado categoria="indices" />} />
+              <Route path="bonos" element={<VistaMercado categoria="bonos" />} />
+
+              {/* 3. Gestor de Portafolio Activo (Ruta Protegida Multi-Tenant) */}
+              <Route
+                path="portfolio"
+                element={
+                  <ProtectedRoute>
+                    <Portfolio />
+                  </ProtectedRoute>
+                }
               />
-            }
-          >
-            {/* 1. Dashboard (Resumen General) */}
-            <Route index element={<Dashboard />} />
+              <Route
+                path="cartera"
+                element={
+                  <ProtectedRoute>
+                    <Portfolio />
+                  </ProtectedRoute>
+                }
+              />
 
-            {/* 2. Vistas Dedicadas de Mercado */}
-            <Route path="cripto" element={<VistaMercado categoria="cripto" />} />
-            <Route path="acciones" element={<VistaMercado categoria="acciones" />} />
-            <Route path="indices" element={<VistaMercado categoria="indices" />} />
-            <Route path="bonos" element={<VistaMercado categoria="bonos" />} />
+              {/* 4. Constructor Visual de Estrategias Quants (Ruta Protegida Multi-Tenant) */}
+              <Route
+                path="estrategias"
+                element={
+                  <ProtectedRoute>
+                    <StrategyBuilder />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="strategy-builder"
+                element={
+                  <ProtectedRoute>
+                    <StrategyBuilder />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="builder"
+                element={
+                  <ProtectedRoute>
+                    <StrategyBuilder />
+                  </ProtectedRoute>
+                }
+              />
 
-            {/* 3. Motor de Backtesting Institucional */}
-            <Route path="backtesting" element={<Backtesting />} />
-            <Route path="backtest" element={<Backtesting />} />
+              {/* 5. Motor de Backtesting Institucional (Público / Lab) */}
+              <Route path="backtesting" element={<Backtesting />} />
+              <Route path="backtest" element={<Backtesting />} />
 
-            {/* 4. Ruta dinámica para cualquier otra categoría */}
-            <Route path=":categoria" element={<VistaMercado />} />
+              {/* 6. Ruta dinámica para cualquier otra categoría */}
+              <Route path=":categoria" element={<VistaMercado />} />
 
-            {/* 5. Fallback a la raíz */}
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
-    </CurrencyProvider>
+              {/* 7. Fallback a la raíz */}
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Route>
+          </Routes>
+        </BrowserRouter>
+      </CurrencyProvider>
+    </AuthProvider>
   );
 }

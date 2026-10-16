@@ -22,13 +22,31 @@ const yahooFinance = typeof YahooFinance === 'function'
   ? new YahooFinance({ suppressNotices: ['yahooSurvey'] })
   : YahooFinance;
 
-// Universos TradFi por defecto
+// Universos TradFi masivos por defecto (S&P 500, Big Tech, Merval, CEDEARs y Renta Fija)
 export const TRADFI_GLOBAL = [
-  'SPY', 'QQQ', 'DIA', 'IWM', 'AAPL', 'MSFT', 'NVDA', 'TSLA', 'AMZN', 'META', 'GOOGL', 'AMD', 'NFLX', 'JPM'
+  // Benchmarks & ETFs
+  'SPY', 'QQQ', 'DIA', 'IWM',
+  // Mega-Cap Tech
+  'AAPL', 'MSFT', 'NVDA', 'TSLA', 'AMZN', 'META', 'GOOGL', 'AMD', 'NFLX',
+  // Pagos & Finanzas
+  'V', 'MA', 'JPM', 'BAC',
+  // Consumo Masivo & Retail
+  'KO', 'PEP', 'COST', 'WMT', 'DIS',
+  // Energía
+  'XOM', 'CVX',
+  // Salud & Farmacéuticas
+  'JNJ', 'UNH', 'LLY',
+  // Software Empresarial & Semiconductores
+  'ADBE', 'CRM', 'INTC', 'ORCL', 'CSCO'
 ];
 
 export const TRADFI_ARG_BONOS = [
-  '^MERV', 'GGAL.BA', 'YPFD.BA', 'PAMP.BA', 'AL30.BA', 'GD30.BA', 'TLT'
+  // Índices & Líderes BYMA (Acciones Locales)
+  '^MERV', 'GGAL.BA', 'YPFD.BA', 'PAMP.BA', 'BMA.BA', 'CEPU.BA', 'TXAR.BA', 'ALUA.BA',
+  // CEDEARs & ADRs de Alta Liquidez
+  'MELI', 'VIST', 'YPF',
+  // Renta Fija Soberana y Treasuries
+  'AL30.BA', 'GD30.BA', 'TLT'
 ];
 
 export const DEFAULT_TRADFI_TICKERS = [...TRADFI_GLOBAL, ...TRADFI_ARG_BONOS];

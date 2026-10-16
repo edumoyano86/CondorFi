@@ -1,0 +1,1011 @@
+/**
+ * ==============================================================================
+ * CondorFi - Gestor de Portafolio en Tiempo Real (Portfolio Tracker)
+ * Archivo: condorfi-ui/src/pages/Portfolio.jsx
+ * 
+ * Módulo Institucional de Gestión de Cartera Activa y PnL Dinámico:
+ * 1. Sincronización bidireccional con Supabase ('cartera_activa') y fallback
+ *    persistente en localStorage para operación offline / simulada.
+ * 2. Cruce en vivo con el Screener Cuantitativo (datosScreener) para mark-to-market.
+ * 3. Cálculo de PnL Abierto nominal y porcentual por activo y consolidado.
+ * 4. Exposición total y ponderación de riesgo de la cartera.
+ * 5. Reacción instantánea al CurrencyContext (ARS/USD) y tasa de cambio USDT/ARS.
+ * 6. Registro modal de nuevas posiciones y eliminación interactiva.
+ * ==============================================================================
+ */
+
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { useOutletContext } from 'react-router-dom';
+import { supabase } from '../lib/supabase';
+import { useCurrency } from '../context/CurrencyContext';
+import { useAuth } from '../context/AuthContext';
+import {
+  Briefcase,
+  TrendingUp,
+  TrendingDown,
+  DollarSign,
+  PlusCircle,
+  Trash2,
+  PieChart as PieChartIcon,
+  Layers,
+  ArrowUpRight,
+  ArrowDownRight,
+  RefreshCw,
+  Coins,
+  Building2,
+  Percent,
+  Search,
+  CheckCircle2,
+  X
+} from 'lucide-react';
+import {
+  ResponsiveContainer,
+  Cell,
+  Tooltip as RechartsTooltip,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis
+} from 'recharts';
+
+// Datos semilla de contingencia institucional en caso de tabla remota no inicializada
+const CARTERA_SEMILLA = [
+  {
+    id: 1,
+    ticker: 'BTC',
+    tipo_mercado: 'cripto',
+    cantidad: 0.25,
+    precio_compra_promedio: 126500000,
+    moneda: 'ARS',
+    fecha_ingreso: '2026-10-01T12:00:00Z'
+  },
+  {
+    id: 2,
+    ticker: 'ETH',
+    tipo_mercado: 'cripto',
+    cantidad: 3.2,
+    precio_compra_promedio: 3780000,
+    moneda: 'ARS',
+    fecha_ingreso: '2026-10-04T15:30:00Z'
+  },
+  {
+    id: 3,
+    ticker: 'SPY',
+    tipo_mercado: 'tradfi',
+    cantidad: 18,
+    precio_compra_promedio: 745.5,
+    moneda: 'USD',
+    fecha_ingreso: '2026-09-15T18:00:00Z'
+  },
+  {
+    id: 4,
+    ticker: 'NVDA',
+    tipo_mercado: 'tradfi',
+    cantidad: 35,
+    precio_compra_promedio: 208.2,
+    moneda: 'USD',
+    fecha_ingreso: '2026-09-25T14:20:00Z'
+  },
+  {
+    id: 5,
+    ticker: 'AL30.BA',
+    tipo_mercado: 'tradfi',
+    cantidad: 4500,
+    precio_compra_promedio: 712.0,
+    moneda: 'ARS',
+    fecha_ingreso: '2026-09-28T16:45:00Z'
+  },
+  {
+    id: 6,
+    ticker: 'GGAL.BA',
+    tipo_mercado: 'tradfi',
+    cantidad: 800,
+    precio_compra_promedio: 5620.0,
+    moneda: 'ARS',
+    fecha_ingreso: '2026-10-08T11:10:00Z'
+  }
+];
+
+const COLORES_PALETA = [
+  '#f97316', '#3b82f6', '#10b981', '#8b5cf6', '#06b6d4',
+  '#ec4899', '#eab308', '#6366f1', '#14b8a6', '#f43f5e'
+];
+
+export default function Portfolio() {
+  const context = useOutletContext() || {};
+  const {
+    datosScreener = [],
+    conectadoSupabase = false,
+    fetchCotizacionesReales
+  } = context;
+
+  const {
+    monedaGlobal,
+    tasaCambio,
+    formatearPrecio,
+    convertirMonto
+  } = useCurrency();
+  const { user } = useAuth();
+
+  const storageKey = useMemo(() => {
+    return 'condorfi_cartera_activa_' + (user?.id || 'default');
+  }, [user]);
+
+  const [posiciones, setPosiciones] = useState(() => {
+    try {
+      const guardadas = localStorage.getItem('condorfi_cartera_activa_' + (user?.id || 'default')) ||
+                        localStorage.getItem('condorfi_cartera_activa');
+      if (guardadas) {
+        const parsed = JSON.parse(guardadas);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return CARTERA_SEMILLA;
+  });
+
+  const [cargandoPosiciones, setCargandoPosiciones] = useState(false);
+  const [modalAbierto, setModalAbierto] = useState(false);
+  const [filtroBusqueda, setFiltroBusqueda] = useState('');
+  const [filtroMercado, setFiltroMercado] = useState('todos');
+
+  // Formulario de nueva posición
+  const [nuevoTicker, setNuevoTicker] = useState('BTC');
+  const [nuevaCantidad, setNuevaCantidad] = useState('');
+  const [nuevoPrecioCompra, setNuevoPrecioCompra] = useState('');
+  const [nuevaMoneda, setNuevaMoneda] = useState('ARS');
+  const [nuevoTipoMercado, setNuevoTipoMercado] = useState('cripto');
+  const [mensajeExito, setMensajeExito] = useState(null);
+
+  // 1. Cargar posiciones desde Supabase si está disponible (con aislamiento RLS por usuario)
+  const cargarPosicionesSupabase = useCallback(async () => {
+    if (!supabase) return;
+    setCargandoPosiciones(true);
+    try {
+      let query = supabase
+        .from('cartera_activa')
+        .select('*');
+
+      if (user && user.id) {
+        // En Supabase con RLS se filtra automáticamente, pero explicitamos para consistencia
+        query = query.or(`user_id.eq.${user.id},user_id.is.null`);
+      }
+
+      const { data, error } = await query.order('fecha_ingreso', { ascending: false });
+
+      if (!error && data && data.length > 0) {
+        setPosiciones(data);
+        localStorage.setItem(storageKey, JSON.stringify(data));
+      }
+    } catch (err) {
+      console.warn('[Portfolio] Aviso al consultar cartera_activa en Supabase:', err.message);
+    } finally {
+      setCargandoPosiciones(false);
+    }
+  }, [user, storageKey]);
+
+  useEffect(() => {
+    cargarPosicionesSupabase();
+  }, [cargarPosicionesSupabase]);
+
+  // Sincronizar precio sugerido al cambiar de ticker en el modal
+  useEffect(() => {
+    const itemScreener = datosScreener.find(d => d.activo.toUpperCase() === nuevoTicker.toUpperCase());
+    if (itemScreener) {
+      setNuevoTipoMercado(itemScreener.tipoMercado || 'tradfi');
+      setNuevaMoneda(itemScreener.moneda || 'USD');
+      if (itemScreener.precioActual && !nuevoPrecioCompra) {
+        setNuevoPrecioCompra(String(itemScreener.precioActual));
+      }
+    }
+  }, [nuevoTicker, datosScreener, nuevoPrecioCompra]);
+
+  // 2. Cruce de datos de cartera con el feed de precios en vivo del Screener
+  const posicionesConMetricas = useMemo(() => {
+    return posiciones.map(pos => {
+      const tickerClean = (pos.ticker || '').toUpperCase();
+      const screenerMatch = datosScreener.find(d => d.activo.toUpperCase() === tickerClean);
+
+      // Moneda nativa del instrumento
+      const monedaNativa = pos.moneda || screenerMatch?.moneda || ((tickerClean === '^MERV' || tickerClean.endsWith('.BA')) ? 'ARS' : 'USD');
+      
+      // Precio actual en vivo
+      const precioActual = Number(screenerMatch?.precioActual || pos.precio_compra_promedio);
+      const precioCompra = Number(pos.precio_compra_promedio);
+      const cantidad = Number(pos.cantidad);
+
+      // Métricas en moneda nativa
+      const costoTotalNativo = cantidad * precioCompra;
+      const valorMercadoNativo = cantidad * precioActual;
+      const pnlNominalNativo = valorMercadoNativo - costoTotalNativo;
+      const pnlPct = precioCompra > 0 ? ((precioActual - precioCompra) / precioCompra) * 100 : 0;
+
+      // Conversión multidivisa reactiva a monedaGlobal (ARS/USD)
+      const costoConvertido = convertirMonto(costoTotalNativo, monedaNativa);
+      const valorConvertido = convertirMonto(valorMercadoNativo, monedaNativa);
+      const pnlNominalConvertido = valorConvertido - costoConvertido;
+
+      return {
+        ...pos,
+        tickerClean,
+        nombre: screenerMatch?.nombre || pos.ticker,
+        mercado: screenerMatch?.mercado || pos.tipo_mercado,
+        tipoMercado: screenerMatch?.tipoMercado || pos.tipo_mercado || 'tradfi',
+        condorScore: screenerMatch?.condorScore ?? null,
+        dictamen: screenerMatch?.dictamen ?? 'HOLD',
+        alineacionTemporal: screenerMatch?.alineacion_temporal ?? 'NEUTRAL',
+        variacion24h: screenerMatch?.variacion24h ?? 0,
+        monedaNativa,
+        cantidad,
+        precioCompra,
+        precioActual,
+        costoTotalNativo,
+        valorMercadoNativo,
+        pnlNominalNativo,
+        pnlPct,
+        costoConvertido,
+        valorConvertido,
+        pnlNominalConvertido
+      };
+    });
+  }, [posiciones, datosScreener, convertirMonto]);
+
+  // 3. Métricas agregadas de Portafolio Total
+  const metricasConsolidadas = useMemo(() => {
+    const exposicionTotal = posicionesConMetricas.reduce((acc, p) => acc + p.valorConvertido, 0);
+    const costoTotal = posicionesConMetricas.reduce((acc, p) => acc + p.costoConvertido, 0);
+    const pnlNominalTotal = exposicionTotal - costoTotal;
+    const pnlPorcentajeTotal = costoTotal > 0 ? ((exposicionTotal - costoTotal) / costoTotal) * 100 : 0;
+
+    // Top performer
+    const posicionesOrdenadasPnL = [...posicionesConMetricas].sort((a, b) => b.pnlPct - a.pnlPct);
+    const mejorActivo = posicionesOrdenadasPnL[0] || null;
+    const peorActivo = posicionesOrdenadasPnL[posicionesOrdenadasPnL.length - 1] || null;
+
+    // Distribución por clase de activo
+    const exposicionCripto = posicionesConMetricas
+      .filter(p => p.tipoMercado === 'cripto')
+      .reduce((acc, p) => acc + p.valorConvertido, 0);
+    const exposicionTradfi = exposicionTotal - exposicionCripto;
+
+    return {
+      exposicionTotal,
+      costoTotal,
+      pnlNominalTotal,
+      pnlPorcentajeTotal,
+      mejorActivo,
+      peorActivo,
+      exposicionCripto,
+      exposicionTradfi,
+      pctCripto: exposicionTotal > 0 ? (exposicionCripto / exposicionTotal) * 100 : 0,
+      pctTradfi: exposicionTotal > 0 ? (exposicionTradfi / exposicionTotal) * 100 : 0,
+      totalPosiciones: posicionesConMetricas.length
+    };
+  }, [posicionesConMetricas]);
+
+  // 4. Ponderación por activo para la tabla y gráficos
+  const posicionesConPonderacion = useMemo(() => {
+    const total = metricasConsolidadas.exposicionTotal || 1;
+    return posicionesConMetricas.map(p => ({
+      ...p,
+      ponderacion: (p.valorConvertido / total) * 100
+    }));
+  }, [posicionesConMetricas, metricasConsolidadas.exposicionTotal]);
+
+  // Filtrado de posiciones para visualización en tabla
+  const posicionesFiltradas = useMemo(() => {
+    return posicionesConPonderacion.filter(p => {
+      const matchTexto = p.ticker.toLowerCase().includes(filtroBusqueda.toLowerCase()) ||
+        p.nombre.toLowerCase().includes(filtroBusqueda.toLowerCase());
+      const matchMercado = filtroMercado === 'todos' || p.tipoMercado === filtroMercado;
+      return matchTexto && matchMercado;
+    });
+  }, [posicionesConPonderacion, filtroBusqueda, filtroMercado]);
+
+  // Datos para el gráfico de distribución por activo
+  const datosGraficoDistribucion = useMemo(() => {
+    return posicionesConPonderacion
+      .map(p => ({
+        name: p.ticker,
+        value: Number(p.valorConvertido.toFixed(2)),
+        pct: Number(p.ponderacion.toFixed(1))
+      }))
+      .sort((a, b) => b.value - a.value);
+  }, [posicionesConPonderacion]);
+
+  // 5. Manejo de Altas y Bajas
+  const agregarPosicion = async (e) => {
+    e.preventDefault();
+    const cant = parseFloat(nuevaCantidad);
+    const precio = parseFloat(nuevoPrecioCompra);
+
+    if (isNaN(cant) || cant <= 0 || isNaN(precio) || precio <= 0) {
+      alert('Por favor ingrese valores numéricos positivos para cantidad y precio de compra.');
+      return;
+    }
+
+    const nueva = {
+      user_id: user?.id || null,
+      ticker: nuevoTicker.toUpperCase().trim(),
+      tipo_mercado: nuevoTipoMercado,
+      cantidad: cant,
+      precio_compra_promedio: precio,
+      moneda: nuevaMoneda,
+      fecha_ingreso: new Date().toISOString()
+    };
+
+    // 1. Guardar en Supabase si está disponible (con user_id para RLS)
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('cartera_activa')
+          .insert([nueva])
+          .select();
+        if (!error && data && data.length > 0) {
+          nueva.id = data[0].id;
+        }
+      } catch (err) {
+        console.warn('[Portfolio] Aviso al insertar en Supabase:', err.message);
+      }
+    }
+
+    if (!nueva.id) {
+      nueva.id = Date.now();
+    }
+
+    const actualizadas = [nueva, ...posiciones];
+    setPosiciones(actualizadas);
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(actualizadas));
+    } catch {}
+
+    setMensajeExito(`Posición ${nueva.ticker} añadida exitosamente.`);
+    setTimeout(() => setMensajeExito(null), 3000);
+    setModalAbierto(false);
+    setNuevaCantidad('');
+    setNuevoPrecioCompra('');
+  };
+
+  const eliminarPosicion = async (id, ticker) => {
+    if (!window.confirm(`¿Estás seguro de liquidar/eliminar la posición de ${ticker}?`)) {
+      return;
+    }
+
+    if (supabase) {
+      try {
+        await supabase
+          .from('cartera_activa')
+          .delete()
+          .eq('id', id);
+      } catch (err) {
+        console.warn('[Portfolio] Aviso al eliminar en Supabase:', err.message);
+      }
+    }
+
+    const actualizadas = posiciones.filter(p => p.id !== id);
+    setPosiciones(actualizadas);
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(actualizadas));
+    } catch {}
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* =========================================================================
+          1. HEADER INSTITUCIONAL DEL PORTAFOLIO
+      ========================================================================== */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+        <div className="flex items-center gap-3">
+          <div className="w-12 h-12 rounded-xl bg-orange-500/10 border border-orange-500/20 flex items-center justify-center text-orange-600 shadow-2xs">
+            <Briefcase className="w-6 h-6" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-xl font-bold font-mono text-slate-900 tracking-tight">
+                Cartera Activa Institucional
+              </h2>
+              <span className="px-2 py-0.5 text-[10px] font-mono font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                Live Mark-to-Market
+              </span>
+            </div>
+            <p className="text-xs text-slate-500 font-sans mt-0.5">
+              Valuación de activos en tiempo real cruzada con el Motor Cuantitativo y paridad {monedaGlobal}.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2.5">
+          <button
+            onClick={cargarPosicionesSupabase}
+            disabled={cargandoPosiciones}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-mono font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-200 transition cursor-pointer"
+            title="Sincronizar con Supabase"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${cargandoPosiciones ? 'animate-spin text-orange-600' : ''}`} />
+            <span className="hidden md:inline">Sincronizar</span>
+          </button>
+
+          <button
+            onClick={() => setModalAbierto(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-mono font-bold text-white bg-orange-600 hover:bg-orange-700 shadow-sm transition active:scale-95 cursor-pointer"
+          >
+            <PlusCircle className="w-4 h-4" />
+            <span>Registrar Compra</span>
+          </button>
+        </div>
+      </div>
+
+      {mensajeExito && (
+        <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center gap-2 text-xs font-mono text-emerald-800 shadow-2xs">
+          <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+          <span>{mensajeExito}</span>
+        </div>
+      )}
+
+      {/* =========================================================================
+          2. CARDS DE MÉTRICAS GLOBALES (KPIs INSTITUCIONALES)
+      ========================================================================== */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Card 1: Exposición Total */}
+        <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-xs flex flex-col justify-between">
+          <div className="flex items-center justify-between text-slate-500 mb-2">
+            <span className="text-xs font-mono uppercase tracking-wider font-semibold">Exposición Total</span>
+            <div className="p-2 rounded-lg bg-slate-50 text-slate-700 border border-slate-100">
+              <DollarSign className="w-4 h-4" />
+            </div>
+          </div>
+          <div>
+            <div className="text-2xl lg:text-3xl font-black font-mono text-slate-900 tracking-tight">
+              {formatearPrecio(metricasConsolidadas.exposicionTotal, monedaGlobal, { mostrarCodigo: true })}
+            </div>
+            <div className="flex items-center gap-2 mt-2 text-xs font-mono">
+              <span className="text-slate-400">Activos:</span>
+              <strong className="text-slate-700 font-bold">{metricasConsolidadas.totalPosiciones} tickers</strong>
+              <span className="text-slate-300">•</span>
+              <span className="text-slate-400">FX:</span>
+              <strong className="text-slate-700 font-bold">${tasaCambio.toLocaleString('es-AR')}</strong>
+            </div>
+          </div>
+        </div>
+
+        {/* Card 2: PnL Total Abierto */}
+        <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-xs flex flex-col justify-between">
+          <div className="flex items-center justify-between text-slate-500 mb-2">
+            <span className="text-xs font-mono uppercase tracking-wider font-semibold">PnL Abierto Total</span>
+            <div className={`p-2 rounded-lg border ${
+              metricasConsolidadas.pnlNominalTotal >= 0
+                ? 'bg-emerald-50 text-emerald-600 border-emerald-100'
+                : 'bg-rose-50 text-rose-600 border-rose-100'
+            }`}>
+              {metricasConsolidadas.pnlNominalTotal >= 0 ? (
+                <TrendingUp className="w-4 h-4" />
+              ) : (
+                <TrendingDown className="w-4 h-4" />
+              )}
+            </div>
+          </div>
+          <div>
+            <div className={`text-2xl lg:text-3xl font-black font-mono tracking-tight flex items-baseline gap-2 ${
+              metricasConsolidadas.pnlNominalTotal >= 0 ? 'text-emerald-600' : 'text-rose-600'
+            }`}>
+              <span>
+                {metricasConsolidadas.pnlNominalTotal >= 0 ? '+' : ''}
+                {formatearPrecio(metricasConsolidadas.pnlNominalTotal, monedaGlobal, { mostrarCodigo: true })}
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5 mt-2">
+              <span className={`px-2 py-0.5 rounded-full text-[11px] font-mono font-bold ${
+                metricasConsolidadas.pnlPorcentajeTotal >= 0
+                  ? 'bg-emerald-100/70 text-emerald-800'
+                  : 'bg-rose-100/70 text-rose-800'
+              }`}>
+                {metricasConsolidadas.pnlPorcentajeTotal >= 0 ? '+' : ''}
+                {metricasConsolidadas.pnlPorcentajeTotal.toFixed(2)}%
+              </span>
+              <span className="text-xs font-mono text-slate-400">retorno global</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Card 3: Inversión Base (Costo Total) */}
+        <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-xs flex flex-col justify-between">
+          <div className="flex items-center justify-between text-slate-500 mb-2">
+            <span className="text-xs font-mono uppercase tracking-wider font-semibold">Costo Base Invertido</span>
+            <div className="p-2 rounded-lg bg-slate-50 text-slate-700 border border-slate-100">
+              <Layers className="w-4 h-4" />
+            </div>
+          </div>
+          <div>
+            <div className="text-2xl lg:text-3xl font-black font-mono text-slate-900 tracking-tight">
+              {formatearPrecio(metricasConsolidadas.costoTotal, monedaGlobal, { mostrarCodigo: true })}
+            </div>
+            <div className="flex items-center gap-2 mt-2 text-xs font-mono text-slate-500">
+              <span>Capital desembolsado original</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Card 4: Top Performer & Asignación */}
+        <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-xs flex flex-col justify-between">
+          <div className="flex items-center justify-between text-slate-500 mb-2">
+            <span className="text-xs font-mono uppercase tracking-wider font-semibold">Top Performer</span>
+            <div className="p-2 rounded-lg bg-amber-50 text-amber-600 border border-amber-100">
+              <Percent className="w-4 h-4" />
+            </div>
+          </div>
+          {metricasConsolidadas.mejorActivo ? (
+            <div>
+              <div className="flex items-center justify-between">
+                <span className="text-xl font-black font-mono text-slate-900">
+                  {metricasConsolidadas.mejorActivo.ticker}
+                </span>
+                <span className="text-xs font-mono font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
+                  +{metricasConsolidadas.mejorActivo.pnlPct.toFixed(2)}%
+                </span>
+              </div>
+              <div className="text-xs font-mono text-slate-500 mt-2 truncate">
+                PnL: +{formatearPrecio(metricasConsolidadas.mejorActivo.pnlNominalConvertido, monedaGlobal)}
+              </div>
+            </div>
+          ) : (
+            <div className="text-sm font-mono text-slate-400">Sin posiciones</div>
+          )}
+        </div>
+      </div>
+
+      {/* =========================================================================
+          3. DISTRIBUCIÓN DE ACTIVOS & ASIGNACIÓN DE CARTERA
+      ========================================================================== */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Barra de Distribución Cripto vs TradFi */}
+        <div className="lg:col-span-1 bg-white p-5 rounded-2xl border border-slate-200 shadow-xs flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-xs font-mono uppercase tracking-wider font-bold text-slate-700 flex items-center gap-2">
+                <PieChartIcon className="w-4 h-4 text-orange-500" />
+                Diversificación por Mercado
+              </h3>
+              <span className="text-[11px] font-mono text-slate-400">Total 100%</span>
+            </div>
+
+            {/* Barra segmentada */}
+            <div className="w-full h-3.5 rounded-full bg-slate-100 flex overflow-hidden border border-slate-200 mb-4">
+              <div
+                style={{ width: `${metricasConsolidadas.pctCripto}%` }}
+                className="bg-orange-500 h-full transition-all duration-500"
+                title={`Cripto: ${metricasConsolidadas.pctCripto.toFixed(1)}%`}
+              />
+              <div
+                style={{ width: `${metricasConsolidadas.pctTradfi}%` }}
+                className="bg-blue-600 h-full transition-all duration-500"
+                title={`TradFi: ${metricasConsolidadas.pctTradfi.toFixed(1)}%`}
+              />
+            </div>
+
+            <div className="space-y-3 font-mono text-xs">
+              <div className="flex items-center justify-between p-2.5 rounded-xl bg-orange-50/60 border border-orange-100">
+                <div className="flex items-center gap-2">
+                  <span className="w-3 h-3 rounded-full bg-orange-500"></span>
+                  <span className="font-bold text-slate-800">Criptomonedas</span>
+                </div>
+                <div className="text-right">
+                  <div className="font-bold text-slate-900">
+                    {formatearPrecio(metricasConsolidadas.exposicionCripto, monedaGlobal)}
+                  </div>
+                  <div className="text-[10px] text-slate-500">
+                    {metricasConsolidadas.pctCripto.toFixed(1)}% del total
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between p-2.5 rounded-xl bg-blue-50/60 border border-blue-100">
+                <div className="flex items-center gap-2">
+                  <span className="w-3 h-3 rounded-full bg-blue-600"></span>
+                  <span className="font-bold text-slate-800">Renta Variable & Bonos</span>
+                </div>
+                <div className="text-right">
+                  <div className="font-bold text-slate-900">
+                    {formatearPrecio(metricasConsolidadas.exposicionTradfi, monedaGlobal)}
+                  </div>
+                  <div className="text-[10px] text-slate-500">
+                    {metricasConsolidadas.pctTradfi.toFixed(1)}% del total
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="pt-4 border-t border-slate-100 text-[11px] font-mono text-slate-400 mt-4">
+            Paridad activa: <strong className="text-slate-700">{monedaGlobal}</strong> • Reevaluado cada 15s.
+          </div>
+        </div>
+
+        {/* Gráfico de Ponderación por Activo */}
+        <div className="lg:col-span-2 bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-xs font-mono uppercase tracking-wider font-bold text-slate-700">
+                Ponderación de Cartera por Activo (Weight %)
+              </h3>
+              <p className="text-[11px] text-slate-500 font-sans">
+                Exposición relativa de capital convertida a {monedaGlobal}
+              </p>
+            </div>
+          </div>
+
+          <div className="h-52 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={datosGraficoDistribucion} margin={{ top: 10, right: 10, left: 0, bottom: 20 }}>
+                <XAxis dataKey="name" stroke="#94a3b8" fontSize={11} fontFamily="monospace" />
+                <YAxis stroke="#94a3b8" fontSize={10} fontFamily="monospace" tickFormatter={v => `${v}`} />
+                <RechartsTooltip
+                  content={({ active, payload }) => {
+                    if (active && payload && payload.length) {
+                      const d = payload[0].payload;
+                      return (
+                        <div className="bg-slate-900 text-white p-2.5 rounded-xl border border-slate-700 shadow-xl text-xs font-mono">
+                          <p className="font-bold text-orange-400">{d.name}</p>
+                          <p className="text-slate-300">
+                            Valor: {formatearPrecio(d.value, monedaGlobal, { mostrarCodigo: true })}
+                          </p>
+                          <p className="text-emerald-400">Ponderación: {d.pct}%</p>
+                        </div>
+                      );
+                    }
+                    return null;
+                  }}
+                />
+                <Bar dataKey="value" radius={[6, 6, 0, 0]}>
+                  {datosGraficoDistribucion.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={COLORES_PALETA[index % COLORES_PALETA.length]} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </div>
+
+      {/* =========================================================================
+          4. TABLA DE POSICIONES ACTIVAS (DATAGRID INSTITUCIONAL)
+      ========================================================================== */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+        {/* Controles de Filtro de la Tabla */}
+        <div className="p-4 border-b border-slate-200/80 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <div className="relative w-full sm:w-64">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={filtroBusqueda}
+                onChange={e => setFiltroBusqueda(e.target.value)}
+                placeholder="Buscar por ticker o nombre..."
+                className="w-full pl-9 pr-3 py-1.5 rounded-xl border border-slate-200 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 transition"
+              />
+            </div>
+            <div className="flex items-center rounded-xl border border-slate-200 p-0.5 bg-slate-50 font-mono text-xs">
+              <button
+                type="button"
+                onClick={() => setFiltroMercado('todos')}
+                className={`px-2.5 py-1 rounded-lg transition cursor-pointer ${
+                  filtroMercado === 'todos' ? 'bg-white font-bold text-slate-900 shadow-2xs' : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                Todos
+              </button>
+              <button
+                type="button"
+                onClick={() => setFiltroMercado('cripto')}
+                className={`px-2.5 py-1 rounded-lg transition cursor-pointer ${
+                  filtroMercado === 'cripto' ? 'bg-white font-bold text-slate-900 shadow-2xs' : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                Cripto
+              </button>
+              <button
+                type="button"
+                onClick={() => setFiltroMercado('tradfi')}
+                className={`px-2.5 py-1 rounded-lg transition cursor-pointer ${
+                  filtroMercado === 'tradfi' ? 'bg-white font-bold text-slate-900 shadow-2xs' : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                TradFi
+              </button>
+            </div>
+          </div>
+
+          <div className="text-xs font-mono text-slate-500">
+            Mostrando <strong>{posicionesFiltradas.length}</strong> de <strong>{posiciones.length}</strong> posiciones
+          </div>
+        </div>
+
+        {/* Tabla Responsiva */}
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-slate-50/75 border-b border-slate-200 text-[10px] font-mono uppercase tracking-wider text-slate-500 select-none">
+                <th className="py-3 px-4">Activo / Instrumento</th>
+                <th className="py-3 px-3 text-right">Cantidad</th>
+                <th className="py-3 px-3 text-right">Precio Compra</th>
+                <th className="py-3 px-3 text-right">Precio Actual</th>
+                <th className="py-3 px-3 text-right">Exposición ({monedaGlobal})</th>
+                <th className="py-3 px-3 text-right">PnL Abierto ({monedaGlobal})</th>
+                <th className="py-3 px-3 text-right">Retorno %</th>
+                <th className="py-3 px-3 text-center">Peso</th>
+                <th className="py-3 px-3 text-center">Quant Score</th>
+                <th className="py-3 px-4 text-center">Acciones</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 font-mono text-xs">
+              {posicionesFiltradas.length === 0 ? (
+                <tr>
+                  <td colSpan={10} className="py-8 text-center text-slate-400 font-mono text-xs">
+                    No se encontraron posiciones activas coincidentes con el filtro.
+                  </td>
+                </tr>
+              ) : (
+                posicionesFiltradas.map(pos => {
+                  const esGanancia = pos.pnlNominalConvertido >= 0;
+                  return (
+                    <tr key={pos.id} className="hover:bg-slate-50/70 transition-colors">
+                      {/* Activo / Ticker */}
+                      <td className="py-3.5 px-4">
+                        <div className="flex items-center gap-2.5">
+                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center font-bold text-xs shrink-0 ${
+                            pos.tipoMercado === 'cripto'
+                              ? 'bg-amber-500/10 text-amber-700 border border-amber-500/20'
+                              : 'bg-blue-500/10 text-blue-700 border border-blue-500/20'
+                          }`}>
+                            {pos.tipoMercado === 'cripto' ? <Coins className="w-4 h-4" /> : <Building2 className="w-4 h-4" />}
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-bold text-slate-900">{pos.ticker}</span>
+                              <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-100 text-slate-600 border border-slate-200">
+                                {pos.monedaNativa}
+                              </span>
+                            </div>
+                            <span className="text-[11px] text-slate-500 font-sans block truncate max-w-[140px]">
+                              {pos.nombre}
+                            </span>
+                          </div>
+                        </div>
+                      </td>
+
+                      {/* Cantidad */}
+                      <td className="py-3.5 px-3 text-right font-medium text-slate-800">
+                        {pos.cantidad.toLocaleString(undefined, { maximumFractionDigits: 6 })}
+                      </td>
+
+                      {/* Precio de Compra */}
+                      <td className="py-3.5 px-3 text-right text-slate-600">
+                        <div>{formatearPrecio(pos.precioCompra, pos.monedaNativa)}</div>
+                        <div className="text-[10px] text-slate-400">
+                          {pos.monedaNativa !== monedaGlobal ? `(${formatearPrecio(pos.precioCompra, pos.monedaNativa, { mostrarCodigo: false })})` : ''}
+                        </div>
+                      </td>
+
+                      {/* Precio Actual en Vivo */}
+                      <td className="py-3.5 px-3 text-right font-bold text-slate-900">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                          <span>{formatearPrecio(pos.precioActual, pos.monedaNativa)}</span>
+                        </div>
+                        <div className={`text-[10px] ${pos.variacion24h >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                          {pos.variacion24h >= 0 ? '+' : ''}{pos.variacion24h.toFixed(2)}% (24h)
+                        </div>
+                      </td>
+
+                      {/* Exposición Actual en Moneda Global */}
+                      <td className="py-3.5 px-3 text-right font-bold text-slate-900">
+                        {formatearPrecio(pos.valorConvertido, monedaGlobal)}
+                      </td>
+
+                      {/* PnL Abierto Nominal */}
+                      <td className={`py-3.5 px-3 text-right font-bold ${
+                        esGanancia ? 'text-emerald-600' : 'text-rose-600'
+                      }`}>
+                        {esGanancia ? '+' : ''}
+                        {formatearPrecio(pos.pnlNominalConvertido, monedaGlobal)}
+                      </td>
+
+                      {/* PnL Abierto % */}
+                      <td className="py-3.5 px-3 text-right">
+                        <span className={`inline-flex items-center gap-0.5 px-2 py-0.5 rounded-full text-xs font-bold ${
+                          pos.pnlPct >= 0
+                            ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                            : 'bg-rose-100 text-rose-800 border border-rose-200'
+                        }`}>
+                          {pos.pnlPct >= 0 ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
+                          {pos.pnlPct >= 0 ? '+' : ''}{pos.pnlPct.toFixed(2)}%
+                        </span>
+                      </td>
+
+                      {/* Ponderación de Cartera */}
+                      <td className="py-3.5 px-3 text-center">
+                        <div className="flex flex-col items-center gap-1">
+                          <span className="text-[11px] font-bold text-slate-700">{pos.ponderacion.toFixed(1)}%</span>
+                          <div className="w-12 h-1.5 rounded-full bg-slate-100 overflow-hidden border border-slate-200">
+                            <div
+                              style={{ width: `${Math.min(100, pos.ponderacion)}%` }}
+                              className="h-full bg-orange-500 rounded-full"
+                            />
+                          </div>
+                        </div>
+                      </td>
+
+                      {/* Quant Score & Convergence */}
+                      <td className="py-3.5 px-3 text-center">
+                        {pos.condorScore !== null ? (
+                          <div className="flex flex-col items-center">
+                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                              pos.dictamen === 'STRONG_BUY'
+                                ? 'bg-emerald-500 text-white'
+                                : pos.dictamen === 'BUY'
+                                ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                : pos.dictamen === 'SELL' || pos.dictamen === 'STRONG_SELL'
+                                ? 'bg-rose-100 text-rose-800 border border-rose-300'
+                                : 'bg-slate-100 text-slate-700'
+                            }`}>
+                              {pos.dictamen}
+                            </span>
+                            <span className="text-[10px] text-slate-400 mt-0.5">
+                              {pos.condorScore}/100
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-[10px] text-slate-400">---</span>
+                        )}
+                      </td>
+
+                      {/* Acciones */}
+                      <td className="py-3.5 px-4 text-center">
+                        <button
+                          type="button"
+                          onClick={() => eliminarPosicion(pos.id, pos.ticker)}
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition cursor-pointer"
+                          title="Eliminar posición de cartera"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* =========================================================================
+          5. MODAL INTERACTIVO: REGISTRAR NUEVA POSICIÓN
+      ========================================================================== */}
+      {modalAbierto && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="p-5 border-b border-slate-200 flex items-center justify-between bg-slate-50/50">
+              <div className="flex items-center gap-2">
+                <Briefcase className="w-5 h-5 text-orange-600" />
+                <h3 className="text-base font-bold font-mono text-slate-900">
+                  Registrar Posición en Cartera
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setModalAbierto(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={agregarPosicion} className="p-6 space-y-4 font-mono text-xs">
+              {/* Ticker Selector */}
+              <div>
+                <label className="block text-slate-700 font-bold mb-1.5">
+                  Ticker del Instrumento:
+                </label>
+                <select
+                  value={nuevoTicker}
+                  onChange={e => {
+                    setNuevoTicker(e.target.value);
+                    setNuevoPrecioCompra('');
+                  }}
+                  className="w-full p-2.5 rounded-xl border border-slate-200 bg-white font-mono text-xs focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 focus:outline-none"
+                >
+                  <optgroup label="Criptomonedas (Top 20)">
+                    {['BTC', 'ETH', 'SOL', 'USDT', 'XRP', 'ADA', 'AVAX', 'DOGE', 'LINK', 'LTC'].map(t => (
+                      <option key={t} value={t}>{t} - Criptoactivo</option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="TradFi Wall Street & ETFs">
+                    {['SPY', 'QQQ', 'DIA', 'IWM', 'AAPL', 'MSFT', 'NVDA', 'TSLA', 'AMZN', 'TLT'].map(t => (
+                      <option key={t} value={t}>{t} - Activo Global</option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="TradFi Argentina (BYMA)">
+                    {['^MERV', 'GGAL.BA', 'YPFD.BA', 'PAMP.BA', 'AL30.BA', 'GD30.BA'].map(t => (
+                      <option key={t} value={t}>{t} - Mercado Local</option>
+                    ))}
+                  </optgroup>
+                </select>
+              </div>
+
+              {/* Cantidad y Moneda */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-700 font-bold mb-1.5">
+                    Cantidad:
+                  </label>
+                  <input
+                    type="number"
+                    step="any"
+                    required
+                    placeholder="ej. 0.5 o 10"
+                    value={nuevaCantidad}
+                    onChange={e => setNuevaCantidad(e.target.value)}
+                    className="w-full p-2.5 rounded-xl border border-slate-200 font-mono text-xs focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-700 font-bold mb-1.5">
+                    Moneda de Compra:
+                  </label>
+                  <select
+                    value={nuevaMoneda}
+                    onChange={e => setNuevaMoneda(e.target.value)}
+                    className="w-full p-2.5 rounded-xl border border-slate-200 bg-white font-mono text-xs focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 focus:outline-none"
+                  >
+                    <option value="USD">USD (Dólares)</option>
+                    <option value="ARS">ARS (Pesos)</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Precio de Compra */}
+              <div>
+                <label className="block text-slate-700 font-bold mb-1.5">
+                  Precio de Compra Promedio ({nuevaMoneda}):
+                </label>
+                <input
+                  type="number"
+                  step="any"
+                  required
+                  placeholder="ej. 745.50"
+                  value={nuevoPrecioCompra}
+                  onChange={e => setNuevoPrecioCompra(e.target.value)}
+                  className="w-full p-2.5 rounded-xl border border-slate-200 font-mono text-xs focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-[11px] text-slate-600 font-sans space-y-1">
+                <p>
+                  • El sistema registrará el costo base y calculará el PnL abierto continuo.
+                </p>
+                <p>
+                  • Reacciona automáticamente al switch ARS/USD de la barra superior.
+                </p>
+              </div>
+
+              <div className="pt-2 flex items-center justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setModalAbierto(false)}
+                  className="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 transition font-mono cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 rounded-xl bg-orange-600 hover:bg-orange-700 text-white font-bold shadow-sm transition active:scale-95 font-mono cursor-pointer"
+                >
+                  Guardar Posición
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

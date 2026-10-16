@@ -15,6 +15,7 @@
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import {
   createChart,
   CandlestickSeries,
@@ -24,6 +25,7 @@ import {
   createSeriesMarkers
 } from 'lightweight-charts';
 import { useCurrency, convertirMonto } from '../context/CurrencyContext';
+import { supabase } from '../lib/supabase';
 import {
   FlaskConical,
   Play,
@@ -51,27 +53,27 @@ const ACTIVOS_PREDETERMINADOS = [
   // TradFi Global
   { ticker: 'SPY',     nombre: 'S&P 500 ETF',       mercado: 'tradfi', categoria: 'Wall Street' },
   { ticker: 'QQQ',     nombre: 'Invesco Nasdaq 100', mercado: 'tradfi', categoria: 'Wall Street' },
-  { ticker: 'DIA',     nombre: 'Dow Jones ETF',     mercado: 'tradfi', categoria: 'Wall Street' },
   { ticker: 'AAPL',    nombre: 'Apple Inc.',         mercado: 'tradfi', categoria: 'Wall Street' },
-  { ticker: 'MSFT',    nombre: 'Microsoft',          mercado: 'tradfi', categoria: 'Wall Street' },
   { ticker: 'NVDA',    nombre: 'NVIDIA Corp',        mercado: 'tradfi', categoria: 'Wall Street' },
-  { ticker: 'TSLA',    nombre: 'Tesla Inc',          mercado: 'tradfi', categoria: 'Wall Street' },
+  { ticker: 'V',       nombre: 'Visa Inc.',          mercado: 'tradfi', categoria: 'Wall Street' },
+  { ticker: 'KO',      nombre: 'Coca-Cola',          mercado: 'tradfi', categoria: 'Wall Street' },
   { ticker: 'TLT',     nombre: 'Treasury 20Y ETF',   mercado: 'tradfi', categoria: 'Wall Street' },
 
-  // Merval & Bonos
+  // Merval, CEDEARs & Bonos
   { ticker: '^MERV',   nombre: 'S&P Merval Arg',    mercado: 'tradfi', categoria: 'Argentina' },
+  { ticker: 'MELI',    nombre: 'MercadoLibre',      mercado: 'tradfi', categoria: 'Argentina' },
   { ticker: 'GGAL.BA', nombre: 'Grupo Fin. Galicia', mercado: 'tradfi', categoria: 'Argentina' },
-  { ticker: 'YPFD.BA', nombre: 'YPF Sociedad Anónima',mercado: 'tradfi', categoria: 'Argentina' },
-  { ticker: 'AL30.BA', nombre: 'Bonar 2030 Ley Arg',  mercado: 'tradfi', categoria: 'Argentina' },
+  { ticker: 'BMA.BA',  nombre: 'Banco Macro',       mercado: 'tradfi', categoria: 'Argentina' },
+  { ticker: 'YPFD.BA', nombre: 'YPF S.A.',          mercado: 'tradfi', categoria: 'Argentina' },
+  { ticker: 'AL30.BA', nombre: 'Bonar 2030',        mercado: 'tradfi', categoria: 'Argentina' },
 
   // Criptoactivos
-  { ticker: 'BTC',     nombre: 'Bitcoin (USDT)',    mercado: 'cripto', categoria: 'Criptomonedas' },
-  { ticker: 'ETH',     nombre: 'Ethereum (USDT)',   mercado: 'cripto', categoria: 'Criptomonedas' },
-  { ticker: 'SOL',     nombre: 'Solana (USDT)',     mercado: 'cripto', categoria: 'Criptomonedas' },
-  { ticker: 'BNB',     nombre: 'BNB Chain',         mercado: 'cripto', categoria: 'Criptomonedas' },
-  { ticker: 'XRP',     nombre: 'XRP Ripple',        mercado: 'cripto', categoria: 'Criptomonedas' },
-  { ticker: 'AVAX',    nombre: 'Avalanche',         mercado: 'cripto', categoria: 'Criptomonedas' },
-  { ticker: 'DOGE',    nombre: 'Dogecoin',          mercado: 'cripto', categoria: 'Criptomonedas' }
+  { ticker: 'BTC',     nombre: 'Bitcoin',           mercado: 'cripto', categoria: 'Criptomonedas' },
+  { ticker: 'ETH',     nombre: 'Ethereum',          mercado: 'cripto', categoria: 'Criptomonedas' },
+  { ticker: 'SOL',     nombre: 'Solana',            mercado: 'cripto', categoria: 'Criptomonedas' },
+  { ticker: 'SUI',     nombre: 'Sui Network',       mercado: 'cripto', categoria: 'Criptomonedas' },
+  { ticker: 'TON',     nombre: 'Toncoin',           mercado: 'cripto', categoria: 'Criptomonedas' },
+  { ticker: 'XRP',     nombre: 'XRP Ripple',        mercado: 'cripto', categoria: 'Criptomonedas' }
 ];
 
 export default function Backtesting() {
@@ -89,6 +91,10 @@ export default function Backtesting() {
   const [buyThreshold, setBuyThreshold] = useState(80);
   const [sellThreshold, setSellThreshold] = useState(40);
 
+  // Integración de Estrategias Personalizadas (Sprint 2 - Visual Query Builder)
+  const [estrategiasDisponibles, setEstrategiasDisponibles] = useState([]);
+  const [estrategiaSeleccionadaId, setEstrategiaSeleccionadaId] = useState('base'); // 'base' | string/number id
+
   // Estado de Ejecución y Resultados
   const [cargando, setCargando] = useState(false);
   const [errorSimulacion, setErrorSimulacion] = useState(null);
@@ -97,6 +103,37 @@ export default function Backtesting() {
 
   // HUD de Crosshair interactivo
   const [hudVela, setHudVela] = useState(null);
+
+  // Carga de Estrategias Personalizadas (LocalStorage + Supabase)
+  useEffect(() => {
+    async function cargarEstrategias() {
+      let lista = [];
+      try {
+        const guardadas = localStorage.getItem('condorfi_estrategias_personalizadas');
+        if (guardadas) {
+          lista = JSON.parse(guardadas);
+        }
+      } catch (errLocal) {
+        console.warn('[Backtesting] Error leyendo estrategias locales:', errLocal);
+      }
+
+      if (lista.length === 0 && supabase) {
+        try {
+          const { data } = await supabase.from('estrategias_personalizadas').select('*');
+          if (data && data.length > 0) lista = data;
+        } catch (errDb) {
+          console.warn('[Backtesting] Supabase offline o sin tablas:', errDb.message);
+        }
+      }
+
+      setEstrategiasDisponibles(lista);
+      const activa = lista.find(e => e.activa);
+      if (activa) {
+        setEstrategiaSeleccionadaId(String(activa.id));
+      }
+    }
+    cargarEstrategias();
+  }, []);
 
   // Referencias para el gráfico TradingView
   const chartContainerRef = useRef(null);
@@ -124,13 +161,18 @@ export default function Backtesting() {
     setErrorSimulacion(null);
 
     try {
+      const estrategiaElegida = estrategiaSeleccionadaId !== 'base'
+        ? estrategiasDisponibles.find(e => String(e.id) === String(estrategiaSeleccionadaId))
+        : null;
+
       const payload = {
         ticker: tickerFinal,
         mercado,
         periodo,
         capital_inicial: capitalInicial,
         buy_threshold: buyThreshold,
-        sell_threshold: sellThreshold
+        sell_threshold: sellThreshold,
+        estrategia: estrategiaElegida || undefined
       };
 
       const res = await fetch('/api/backtest', {
@@ -153,7 +195,7 @@ export default function Backtesting() {
     } finally {
       setCargando(false);
     }
-  }, [tickerSeleccionado, tickerPersonalizado, mercado, periodo, capitalInicial, buyThreshold, sellThreshold]);
+  }, [tickerSeleccionado, tickerPersonalizado, mercado, periodo, capitalInicial, buyThreshold, sellThreshold, estrategiaSeleccionadaId, estrategiasDisponibles]);
 
   // Ejecución inicial automática (SPY 1 año)
   useEffect(() => {
@@ -514,8 +556,60 @@ export default function Backtesting() {
           </div>
         </div>
 
-        {/* FASE 2: Controles Deslizantes (Sliders) Paramétricos Dinámicos */}
+        {/* Selector de Estrategia Cuantitativa (Sprint 2 - Query Builder Integration) */}
         <div className="pt-4 border-t border-slate-800/80">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-xl bg-slate-950/70 border border-slate-800/90 mb-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-indigo-400">
+                <Layers className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold font-mono text-white uppercase tracking-wider">
+                    Estrategia de Ejecución Cuantitativa
+                  </span>
+                  {resultadoBacktest?.simulacion?.estrategia ? (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/40">
+                      Reglas Personalizadas: {resultadoBacktest.simulacion.estrategia.nombre}
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700">
+                      CondorScore Base
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  {estrategiaSeleccionadaId === 'base'
+                    ? 'Ejecutando modelo cuantitativo nativo (CondorScore) regulado por los umbrales dinámicos inferiores.'
+                    : `Simulando según reglas lógicas creadas visualmente en el Strategy Builder.`}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <select
+                value={estrategiaSeleccionadaId}
+                onChange={(e) => setEstrategiaSeleccionadaId(e.target.value)}
+                className="bg-slate-900 border border-slate-700 text-white text-xs font-mono rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500"
+              >
+                <option value="base">CondorScore Base (Parámetros Dinámicos)</option>
+                {estrategiasDisponibles.map((est) => (
+                  <option key={est.id} value={est.id}>
+                    {est.nombre} {est.activa ? '⚡ (Activa)' : ''}
+                  </option>
+                ))}
+              </select>
+
+              <Link
+                to="/estrategias"
+                className="px-3 py-2 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 hover:text-white border border-indigo-500/30 text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap"
+              >
+                <Sliders className="w-3.5 h-3.5" />
+                <span>Constructor Visual &rarr;</span>
+              </Link>
+            </div>
+          </div>
+
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
               <Sliders className="w-4 h-4 text-indigo-400" />
@@ -884,6 +978,7 @@ export default function Backtesting() {
                   <th className="py-3 px-3">Precio Venta</th>
                   <th className="py-3 px-3">Duración</th>
                   <th className="py-3 px-3">Resultado</th>
+                  <th className="py-3 px-3">Estrategia</th>
                   <th className="py-3 px-3">PnL (%)</th>
                   <th className="py-3 px-3 text-right">PnL ({monedaGlobal})</th>
                   <th className="py-3 px-3 text-right">Capital ({monedaGlobal})</th>
@@ -910,6 +1005,11 @@ export default function Backtesting() {
                             : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
                         }`}>
                           {op.resultado}
+                        </span>
+                      </td>
+                      <td className="py-3 px-3">
+                        <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800/90 text-slate-300 border border-slate-700/60 truncate max-w-[130px] inline-block" title={op.motivoSalida ? `${op.estrategia} (${op.motivoSalida})` : op.estrategia}>
+                          {op.estrategia || 'CondorScore'}
                         </span>
                       </td>
                       <td className={`py-3 px-3 font-bold ${
