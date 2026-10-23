@@ -16,10 +16,13 @@
  *    - RSI (14) para timing de entrada intradiaria y detección de sobrecompra
  *    - MACD (12, 26, 9) para gatillo de momentum
  *    - Bandas de Bollinger [SMA(20), ±2σ]
- * 3. CondorScore Ponderado (0 a 100):
- *    - Fusión ponderada: Macro 1d (60%) + Micro 1h (40%).
- *    - Ponderación de anomalías: Si MACD diario es alcista (+15 pts) pero RSI 1h
- *      está en sobrecompra extrema (-10 pts), el score lo penaliza matemáticamente.
+ * 3. CondorScore Ponderado (0 a 100) con Ponderación Dinámica de Volatilidad:
+ *    - Régimen de Alta Volatilidad Intradiaria (Bandwidth 1h >= 4.0%):
+ *      Asigna 70% al Micro (1h) y 30% al Macro (1d) para reaccionar rápido a los quiebres.
+ *    - Régimen de Baja Volatilidad / Consolidación Lateral (Bandwidth 1h <= 2.0%):
+ *      Asigna 80% al Macro (1d) y 20% al Micro (1h) para evitar señales falsas (whipsaws).
+ *    - Régimen Normal / Transición (Bandwidth 1h entre 2.0% y 4.0%):
+ *      Interpolación adaptativa continua entre ambos regímenes.
  * 4. Dictamen de Convergencia Institucional (alineacion_temporal):
  *    - 'ALINEADO_ALCISTA' | 'ALINEADO_BAJISTA' | 'DIVERGENCIA' | 'NEUTRAL'
  *    - Regla de Oro: Solo arroja 'STRONG_BUY' si tanto la vela diaria como la de
@@ -345,21 +348,27 @@ export function calcularBandasBollinger(precios, periodo = 20, numDesvios = 2) {
 
 /**
  * ==============================================================================
- * MOTOR QUANT MTFA: CondorScore Ponderado y Dictamen de Convergencia
+ * MOTOR QUANT MTFA: CondorScore Dinámico por Volatilidad (Bollinger Bandwidth)
  * ==============================================================================
- * Pondera de forma tridimensional:
- * - Timeframe 1d (Macro / Tendencia Principal): 60% del peso estadístico.
- * - Timeframe 1h (Micro / Timing Intradiario): 40% del peso estadístico.
+ * Pondera de forma tridimensional con pesos dinámicos adaptados al régimen de mercado:
+ * 
+ * 1. Régimen de Alta Volatilidad Intradiaria (Bandwidth 1h >= 4.0%):
+ *    - Asigna 70% al Micro (1h) y 30% al Macro (1d).
+ *    - Objetivo Quant: Captura y reacciona de forma inmediata a los quiebres (breakouts)
+ *      y expansiones de volatilidad intradiaria.
+ * 
+ * 2. Régimen de Baja Volatilidad / Compresión (Bandwidth 1h <= 2.0%):
+ *    - Asigna 80% al Macro (1d) y 20% al Micro (1h).
+ *    - Objetivo Quant: Filtra y neutraliza el ruido (whipsaws) de consolidación lateral,
+ *      anclando el veredicto en la tendencia estructural de largo plazo.
+ * 
+ * 3. Régimen de Transición Normal (Bandwidth 1h entre 2.0% y 4.0%):
+ *    - Interpolación continua entre [0.80 Macro / 0.20 Micro] y [0.30 Macro / 0.70 Micro].
  * 
  * Regla de Oro: Solo arroja 'STRONG_BUY' si tanto la vela diaria como la de 1h
  * confirman la tendencia alcista simultáneamente ('ALINEADO_ALCISTA').
- * 
- * Penalización de Divergencia: Si 1d es alcista pero 1h está en sobrecompra
- * extrema (-10 pts) o cruce bajista, el sistema degrada la señal.
  */
 export function calcularCondorScoreMTFA({ tf1d, tf1h, precioActual, variacion24h }) {
-  let score = 50; // Punto neutral base
-
   const rsi1d = tf1d?.rsi ?? 50;
   const macd1d = tf1d?.macd ?? { histogram: 0, trend: 'NEUTRAL', cruceAlcista: false, cruceBajista: false };
   const bb1d = tf1d?.bollinger ?? { percentB: 0.5, bandwidth: 0 };
@@ -368,75 +377,121 @@ export function calcularCondorScoreMTFA({ tf1d, tf1h, precioActual, variacion24h
   const macd1h = tf1h?.macd ?? { histogram: 0, trend: 'NEUTRAL', cruceAlcista: false, cruceBajista: false };
   const bb1h = tf1h?.bollinger ?? { percentB: 0.5, bandwidth: 0 };
 
-  // 1. EVALUACIÓN MACRO 1d (Largo Plazo - Tendencia Estructural)
-  // A. RSI 1d
+  // 1. EVALUACIÓN SUB-SCORE MACRO 1d (Largo Plazo - Tendencia Estructural) [0, 100]
+  let scoreMacro = 50;
+
+  // A. RSI 1d (Momentum Estructural)
   if (rsi1d < 25) {
-    score += 24; // Sobreventa macro extrema
+    scoreMacro += 18; // Sobreventa macro extrema
   } else if (rsi1d < 35) {
-    score += 16; // Sobreventa macro
+    scoreMacro += 12; // Sobreventa macro
   } else if (rsi1d >= 35 && rsi1d <= 52) {
-    score += 8;  // Acumulación favorable
+    scoreMacro += 6;  // Acumulación favorable
   } else if (rsi1d > 75) {
-    score -= 24; // Sobrecompra macro extrema
+    scoreMacro -= 18; // Sobrecompra macro extrema
   } else if (rsi1d > 68) {
-    score -= 16; // Sobrecompra macro
+    scoreMacro -= 12; // Sobrecompra macro
   } else if (rsi1d >= 58 && rsi1d <= 68) {
-    score -= 6;
+    scoreMacro -= 5;
   }
 
-  // B. Bandas de Bollinger 1d
+  // B. Bandas de Bollinger 1d (%B y Desviación)
   if (bb1d.percentB <= 0) {
-    score += 20; // Ruptura de banda inferior macro (Mean Reversion)
+    scoreMacro += 16; // Ruptura banda inferior macro (Mean Reversion)
   } else if (bb1d.percentB <= 0.20) {
-    score += 12; // Soporte dinámico inferior
+    scoreMacro += 10; // Soporte dinámico inferior
   } else if (bb1d.percentB >= 1.0) {
-    score -= 20; // Ruptura de banda superior macro (Sobreextensión)
+    scoreMacro -= 16; // Ruptura banda superior macro (Sobreextensión)
   } else if (bb1d.percentB >= 0.80) {
-    score -= 12; // Resistencia superior
+    scoreMacro -= 10; // Resistencia superior
   }
 
-  // C. MACD 1d
+  // C. MACD 1d (Tendencia y Cruces de Señal)
   if (macd1d.cruceAlcista) {
-    score += 20; // Golden cross macro
+    scoreMacro += 16; // Golden cross macro
   } else if (macd1d.histogram > 0 && macd1d.trend === 'BULLISH') {
-    score += 15; // MACD diario alcista (+15 pts)
+    scoreMacro += 11; // Expansión alcista sostenida
   } else if (macd1d.cruceBajista) {
-    score -= 20; // Death cross macro
+    scoreMacro -= 16; // Death cross macro
   } else if (macd1d.histogram < 0 && macd1d.trend === 'BEARISH') {
-    score -= 15; // Presión vendedora macro
+    scoreMacro -= 11; // Presión vendedora macro
   }
 
-  // 2. EVALUACIÓN MICRO 1h (Corto Plazo - Timing Fino & Momentum)
-  // A. RSI 1h (Timing de entrada)
-  if (rsi1h < 28) {
-    score += 12; // Sobreventa intradiaria / oportunidad de rebote
-  } else if (rsi1h >= 30 && rsi1h <= 45) {
-    score += 6;  // Pullback intradiario saludable
+  scoreMacro = Math.max(0, Math.min(100, scoreMacro));
+
+  // 2. EVALUACIÓN SUB-SCORE MICRO 1h (Corto Plazo - Timing & Quiebres) [0, 100]
+  let scoreMicro = 50;
+
+  // A. RSI 1h (Timing Intradiario)
+  if (rsi1h < 25) {
+    scoreMicro += 18; // Sobreventa intradiaria extrema / capitulación
+  } else if (rsi1h < 35) {
+    scoreMicro += 12; // Sobreventa intradiaria
+  } else if (rsi1h >= 35 && rsi1h <= 50) {
+    scoreMicro += 6;  // Pullback intradiario saludable
   } else if (rsi1h > 75) {
-    score -= 14; // Sobrecompra extrema de 1h (-14 pts) -> Riesgo de reversión inmediata
+    scoreMicro -= 18; // Sobrecompra intradiaria extrema
   } else if (rsi1h > 68) {
-    score -= 10; // Sobrecompra de 1h (-10 pts)
+    scoreMicro -= 12; // Sobrecompra intradiaria
+  } else if (rsi1h >= 58 && rsi1h <= 68) {
+    scoreMicro -= 5;
   }
 
-  // B. Bandas de Bollinger 1h
-  if (bb1h.percentB <= 0.15) {
-    score += 8;  // Rebote intradiario en banda inferior
-  } else if (bb1h.percentB >= 0.85) {
-    score -= 8;  // Resistencia intradiaria
+  // B. Bandas de Bollinger 1h (Reacción a Quiebres)
+  if (bb1h.percentB <= 0) {
+    scoreMicro += 16; // Quiebre intradiario inferior (rebote violento)
+  } else if (bb1h.percentB <= 0.20) {
+    scoreMicro += 10; // Soporte dinámico 1h
+  } else if (bb1h.percentB >= 1.0) {
+    scoreMicro -= 16; // Quiebre intradiario superior (exhaustion / resistencia)
+  } else if (bb1h.percentB >= 0.80) {
+    scoreMicro -= 10;
   }
 
-  // C. MACD 1h
+  // C. MACD 1h (Gatillo de Momentum)
   if (macd1h.cruceAlcista) {
-    score += 12; // Gatillo de entrada intradiario
+    scoreMicro += 16; // Gatillo alcista intradiario
   } else if (macd1h.histogram > 0 && macd1h.trend === 'BULLISH') {
-    score += 8;
+    scoreMicro += 11;
   } else if (macd1h.cruceBajista) {
-    score -= 12; // Gatillo de salida intradiario
+    scoreMicro -= 16; // Gatillo bajista intradiario
   } else if (macd1h.histogram < 0 && macd1h.trend === 'BEARISH') {
-    score -= 8;
+    scoreMicro -= 11;
   }
 
-  // 3. DETERMINACIÓN DE TENDENCIAS POR TIMEFRAME
+  scoreMicro = Math.max(0, Math.min(100, scoreMicro));
+
+  // 3. DETERMINACIÓN DINÁMICA DE PESOS BASADA EN VOLATILIDAD (Bollinger Bandwidth 1h)
+  const bandwidth1h = typeof bb1h.bandwidth === 'number' && !isNaN(bb1h.bandwidth) ? bb1h.bandwidth : 3.0;
+  const UMBRAL_BW_BAJA = 2.0; // <= 2.0%: Consolidación lateral (Squeeze)
+  const UMBRAL_BW_ALTA = 4.0; // >= 4.0%: Expansión intradiaria (Breakout)
+
+  let pesoMacro = 0.60;
+  let pesoMicro = 0.40;
+  let regimenVolatilidad = 'NORMAL';
+
+  if (bandwidth1h >= UMBRAL_BW_ALTA) {
+    // ALTA VOLATILIDAD: 70% Micro (1h) para reaccionar rápido a quiebres de volatilidad
+    pesoMicro = 0.70;
+    pesoMacro = 0.30;
+    regimenVolatilidad = 'ALTA_VOLATILIDAD_BREAKOUT';
+  } else if (bandwidth1h <= UMBRAL_BW_BAJA) {
+    // BAJA VOLATILIDAD: 80% Macro (1d) para evitar señales falsas por consolidación lateral (whipsaws)
+    pesoMacro = 0.80;
+    pesoMicro = 0.20;
+    regimenVolatilidad = 'BAJA_VOLATILIDAD_CONSOLIDACION';
+  } else {
+    // TRANSICIÓN CONTINUA ADAPTATIVA: Interpolación lineal entre 2.0% y 4.0%
+    const alpha = (bandwidth1h - UMBRAL_BW_BAJA) / (UMBRAL_BW_ALTA - UMBRAL_BW_BAJA);
+    pesoMicro = Number((0.20 + alpha * (0.70 - 0.20)).toFixed(4));
+    pesoMacro = Number((1.0 - pesoMicro).toFixed(4));
+    regimenVolatilidad = 'VOLATILIDAD_MODERADA';
+  }
+
+  // Fusión matemática ponderada por régimen de volatilidad
+  let scorePonderado = (pesoMacro * scoreMacro) + (pesoMicro * scoreMicro);
+
+  // 4. DETERMINACIÓN DE TENDENCIAS POR TIMEFRAME
   const esAlcista1d = (macd1d.histogram > 0 || macd1d.cruceAlcista || rsi1d < 38) && rsi1d <= 70;
   const esBajista1d = (macd1d.histogram < 0 || macd1d.cruceBajista) && rsi1d >= 50;
   const tendencia1d = esAlcista1d ? 'BULLISH' : (esBajista1d ? 'BEARISH' : 'NEUTRAL');
@@ -445,24 +500,24 @@ export function calcularCondorScoreMTFA({ tf1d, tf1h, precioActual, variacion24h
   const esBajista1h = (macd1h.histogram < 0 || macd1h.cruceBajista || rsi1h > 70);
   const tendencia1h = esAlcista1h ? 'BULLISH' : (esBajista1h ? 'BEARISH' : 'NEUTRAL');
 
-  // 4. DICTAMEN DE CONVERGENCIA TEMPORAL (alineacion_temporal)
+  // 5. DICTAMEN DE CONVERGENCIA TEMPORAL (alineacion_temporal)
   let alineacionTemporal = 'NEUTRAL';
   let resumenConvergencia = '';
 
   if (tendencia1d === 'BULLISH' && tendencia1h === 'BULLISH') {
     alineacionTemporal = 'ALINEADO_ALCISTA';
-    score += 10; // Bonus por convergencia armónica alcista
+    scorePonderado += 8; // Bonus por convergencia armónica alcista
     resumenConvergencia = 'Convergencia alcista simultánea confirmada en temporalidades 1d y 1h.';
   } else if (tendencia1d === 'BEARISH' && tendencia1h === 'BEARISH') {
     alineacionTemporal = 'ALINEADO_BAJISTA';
-    score -= 10; // Penalización por convergencia bajista
+    scorePonderado -= 8; // Penalización por convergencia bajista
     resumenConvergencia = 'Convergencia bajista simultánea en temporalidades 1d y 1h.';
   } else if (
     (tendencia1d === 'BULLISH' && (tendencia1h === 'BEARISH' || rsi1h > 68 || macd1h.cruceBajista)) ||
     (tendencia1d === 'BEARISH' && (tendencia1h === 'BULLISH' || rsi1h < 32 || macd1h.cruceAlcista))
   ) {
     alineacionTemporal = 'DIVERGENCIA';
-    score -= 10; // Penalización matemática por desincronización
+    scorePonderado -= 8; // Penalización matemática por desincronización
     resumenConvergencia = tendencia1d === 'BULLISH'
       ? `Divergencia temporal: Tendencia macro 1d alcista pero vela de 1h en sobrecompra/corrección (RSI 1h: ${rsi1h}).`
       : `Divergencia temporal: Tendencia macro 1d bajista con rebote técnico intradiario en 1h.`;
@@ -472,9 +527,9 @@ export function calcularCondorScoreMTFA({ tf1d, tf1h, precioActual, variacion24h
   }
 
   // Bounding estricto [0, 100]
-  const finalScore = Math.round(Math.max(0, Math.min(100, score)));
+  const finalScore = Math.round(Math.max(0, Math.min(100, scorePonderado)));
 
-  // 5. DICTAMEN INSTITUCIONAL CON REGLA ESTRICTA DE CONVERGENCIA
+  // 6. DICTAMEN INSTITUCIONAL CON REGLA ESTRICTA DE CONVERGENCIA
   // SOLO arrojará 'STRONG_BUY' si tanto la vela diaria como la de 1h confirman la tendencia alcista simultáneamente
   let dictamen = 'HOLD';
   if (finalScore >= 78) {
@@ -500,21 +555,35 @@ export function calcularCondorScoreMTFA({ tf1d, tf1h, precioActual, variacion24h
     condorScore: finalScore,
     dictamen,
     alineacion_temporal: alineacionTemporal,
+    ponderacion: {
+      pesoMacro,
+      pesoMicro,
+      bandwidth1h,
+      bandwidth1d: bb1d.bandwidth,
+      regimenVolatilidad
+    },
     mtfa: {
       timeframe1d: {
         rsi: rsi1d,
         macd: macd1d,
         bollinger: bb1d,
-        tendencia: tendencia1d
+        tendencia: tendencia1d,
+        scoreParcial: Math.round(scoreMacro)
       },
       timeframe1h: {
         rsi: rsi1h,
         macd: macd1h,
         bollinger: bb1h,
-        tendencia: tendencia1h
+        tendencia: tendencia1h,
+        scoreParcial: Math.round(scoreMicro)
       },
       convergencia: alineacionTemporal,
-      resumen: resumenConvergencia
+      resumen: resumenConvergencia,
+      regimenVolatilidad,
+      pesosDinamicos: {
+        macro1d: `${Math.round(pesoMacro * 100)}%`,
+        micro1h: `${Math.round(pesoMicro * 100)}%`
+      }
     }
   };
 }
@@ -527,8 +596,8 @@ export function calcularCondorScore(args) {
     return calcularCondorScoreMTFA(args);
   }
   const { rsi, bollinger, macd, precioActual, variacion24h } = args;
-  const tf1d = { rsi: rsi || 50, bollinger: bollinger || { percentB: 0.5 }, macd: macd || { histogram: 0, trend: 'NEUTRAL' } };
-  const tf1h = { rsi: rsi || 50, bollinger: bollinger || { percentB: 0.5 }, macd: macd || { histogram: 0, trend: 'NEUTRAL' } };
+  const tf1d = { rsi: rsi || 50, bollinger: bollinger || { percentB: 0.5, bandwidth: 2.0 }, macd: macd || { histogram: 0, trend: 'NEUTRAL' } };
+  const tf1h = { rsi: rsi || 50, bollinger: bollinger || { percentB: 0.5, bandwidth: 2.0 }, macd: macd || { histogram: 0, trend: 'NEUTRAL' } };
   return calcularCondorScoreMTFA({ tf1d, tf1h, precioActual, variacion24h });
 }
 
