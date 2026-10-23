@@ -1058,10 +1058,225 @@ async function analizarActivoCripto(db, moneda, limite = 100) {
 }
 
 /**
+ * ==============================================================================
+ * Motor de Alertas Push Institucionales vía Telegram
+ * ==============================================================================
+ */
+
+/**
+ * Escapa caracteres HTML para evitar errores de entidad en la API de Telegram.
+ */
+export function escapeHtml(text) {
+  if (text === null || text === undefined) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/**
+ * Formatea un valor numérico a divisa nativa (ARS / USD) para el mensaje de Telegram.
+ */
+export function formatearPrecioAlerta(valor, moneda = 'USD') {
+  if (typeof valor !== 'number' || isNaN(valor) || valor <= 0) return 'N/D';
+  const esArs = moneda === 'ARS';
+  const sufijo = esArs ? ' ARS' : ' USD';
+  const decimales = valor < 1 ? 4 : 2;
+  const formateado = valor.toLocaleString(esArs ? 'es-AR' : 'en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: decimales
+  });
+  return `$${formateado}${sufijo}`;
+}
+
+/**
+ * Construye el bloque consolidado de texto en formato HTML para Telegram.
+ * Agrupa todas las alertas de la ejecución en un solo mensaje profesional (Anti-Spam).
+ * 
+ * @param {Array<Object>} oportunidades Lista de activos con STRONG_BUY o STRONG_SELL
+ * @param {Object} [estrategia] Estrategia activa de Query Builder si existe
+ * @returns {string} Mensaje consolidado listo para la API de Telegram
+ */
+export function construirMensajeConsolidadoTelegram(oportunidades, estrategia = null) {
+  if (!oportunidades || oportunidades.length === 0) return '';
+
+  const fechaHora = new Date().toLocaleString('es-AR', {
+    timeZone: 'America/Argentina/Buenos_Aires',
+    dateStyle: 'short',
+    timeStyle: 'medium'
+  });
+
+  const totalCompras = oportunidades.filter(o => o.dictamen === 'STRONG_BUY').length;
+  const totalVentas = oportunidades.filter(o => o.dictamen === 'STRONG_SELL').length;
+
+  let header = `🦅 <b>CONDORFI QUANT ALERTS</b>\n`;
+  header += `<i>Motor Institucional de Señales Cuantitativas</i>\n`;
+  header += `━━━━━━━━━━━━━━━━━━━━━━\n`;
+  header += `⏱ <b>Fecha:</b> <code>${fechaHora} (ARG)</code>\n`;
+  header += `🎯 <b>Oportunidades Detectadas:</b> <b>${oportunidades.length}</b> (🟢 ${totalCompras} | 🔴 ${totalVentas})\n`;
+  if (estrategia?.nombre) {
+    header += `⚙️ <b>Estrategia Activa:</b> <i>${escapeHtml(estrategia.nombre)}</i>\n`;
+  }
+  header += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+
+  // Limitar para evitar exceder el límite de 4096 caracteres de Telegram
+  const maxItems = 12;
+  const itemsAMostrar = oportunidades.slice(0, maxItems);
+
+  const bloques = itemsAMostrar.map((op, idx) => {
+    const esCompra = op.dictamen === 'STRONG_BUY';
+    const tagSeñal = esCompra ? '🟢 <b>COMPRA FUERTE (STRONG_BUY)</b>' : '🔴 <b>VENTA FUERTE (STRONG_SELL)</b>';
+    const precio = formatearPrecioAlerta(op.precioActual, op.moneda);
+    const nombre = escapeHtml(op.nombre || op.activo);
+    const ticker = escapeHtml(op.activo);
+    const score = typeof op.condorScore === 'number' ? `${op.condorScore}/100` : 'N/D';
+
+    // Determinar la justificación institucional (Estrategia Query Builder vs MTFA)
+    let justificacion = '';
+    if (op.estrategiaAplicada?.cumplida) {
+      justificacion = `Estrategia: "${escapeHtml(op.estrategiaAplicada.nombre || 'Personalizada')}"`;
+      if (op.mensaje) {
+        const partes = op.mensaje.split('|');
+        const fragmento = partes[0].replace(/\[.*?\]\s*/, '').trim();
+        if (fragmento) {
+          justificacion += ` — ${escapeHtml(fragmento)}`;
+        }
+      }
+    } else if (op.alineacion_temporal) {
+      const alineacionLabel = op.alineacion_temporal === 'ALINEADO_ALCISTA'
+        ? 'Convergencia 1d+1h Alcista'
+        : op.alineacion_temporal === 'ALINEADO_BAJISTA'
+          ? 'Convergencia 1d+1h Bajista'
+          : op.alineacion_temporal;
+      justificacion = alineacionLabel;
+      if (op.mtfa?.resumen) {
+        justificacion += ` — ${escapeHtml(op.mtfa.resumen)}`;
+      }
+    } else {
+      justificacion = escapeHtml(op.mensaje || 'Señal técnica de alta convicción');
+    }
+
+    // Métricas complementarias (RSI 1d y RSI 1h)
+    const rsi1d = op.rsi !== null && op.rsi !== undefined ? op.rsi : op.mtfa?.timeframe1d?.rsi;
+    const rsi1h = op.mtfa?.timeframe1h?.rsi;
+    let metricas = `📊 <b>CondorScore:</b> <code>${score}</code>`;
+    if (rsi1d !== undefined && rsi1d !== null) {
+      metricas += ` | <b>RSI 1d:</b> <code>${rsi1d}</code>`;
+    }
+    if (rsi1h !== undefined && rsi1h !== null) {
+      metricas += ` | <b>RSI 1h:</b> <code>${rsi1h}</code>`;
+    }
+
+    return (
+      `<b>#${idx + 1} • ${ticker}</b> — <i>${nombre}</i>\n` +
+      `💵 <b>Precio:</b> <code>${precio}</code>\n` +
+      `⚡ <b>Señal:</b> ${tagSeñal}\n` +
+      `${metricas}\n` +
+      `💡 <b>Justificación:</b> <i>${justificacion}</i>\n`
+    );
+  });
+
+  let cuerpo = bloques.join('\n');
+
+  if (oportunidades.length > maxItems) {
+    cuerpo += `\n<i>... y ${oportunidades.length - maxItems} oportunidades adicionales en la terminal web.</i>\n`;
+  }
+
+  let footer = `\n━━━━━━━━━━━━━━━━━━━━━━\n`;
+  footer += `⚡ <i>CondorFi Algorithmic Trading Desk</i>`;
+
+  return header + cuerpo + footer;
+}
+
+/**
+ * Cliente de Mensajería: Envía un mensaje consolidado hacia la API oficial de Telegram.
+ * 
+ * @param {string} mensajeHTML Bloque de texto formateado en HTML
+ * @param {Object} [opciones] Parámetros opcionales (parseMode, token, chatId, timeoutMs)
+ * @returns {Promise<{ enviado: boolean, ok?: boolean, error?: string, motivo?: string, status?: number, messageId?: number }>}
+ */
+export async function enviarAlertaTelegram(mensajeHTML, opciones = {}) {
+  const token = opciones.token || process.env.TELEGRAM_BOT_TOKEN || process.env.VITE_TELEGRAM_BOT_TOKEN;
+  const chatId = opciones.chatId || process.env.TELEGRAM_CHAT_ID || process.env.VITE_TELEGRAM_CHAT_ID;
+  const parseMode = opciones.parseMode || 'HTML';
+
+  if (!token || !chatId) {
+    console.warn('[Telegram Push] TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID no configurados. Omitiendo despacho.');
+    return {
+      enviado: false,
+      motivo: 'CONFIG_MISSING'
+    };
+  }
+
+  if (!mensajeHTML || typeof mensajeHTML !== 'string' || mensajeHTML.trim().length === 0) {
+    return {
+      enviado: false,
+      motivo: 'EMPTY_MESSAGE'
+    };
+  }
+
+  const endpoint = `https://api.telegram.org/bot${token}/sendMessage`;
+
+  try {
+    const controller = new AbortController();
+    const timeoutMs = opciones.timeoutMs || 6000;
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: mensajeHTML,
+        parse_mode: parseMode,
+        disable_web_page_preview: true
+      }),
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    const data = await res.json().catch(() => null);
+
+    if (!res.ok || !data?.ok) {
+      const errorMsg = data?.description || `HTTP ${res.status} ${res.statusText}`;
+      console.error('[Telegram Push] Error devuelto por la API de Telegram:', errorMsg);
+      return {
+        enviado: false,
+        error: errorMsg,
+        status: res.status
+      };
+    }
+
+    console.log('[Telegram Push] Alerta consolidada enviada exitosamente a Telegram.');
+    return {
+      enviado: true,
+      ok: true,
+      messageId: data?.result?.message_id
+    };
+  } catch (error) {
+    const msg = error.name === 'AbortError' ? 'Timeout esperando respuesta de Telegram' : error.message;
+    console.error('[Telegram Push] Excepción de red al enviar alerta a Telegram:', msg);
+    return {
+      enviado: false,
+      error: msg
+    };
+  }
+}
+
+/**
  * Handler HTTP Serverless de Vercel.
  */
 export default async function handler(req, res) {
   const inicio = performance.now();
+
+  // Detección de ejecución programada por Vercel Cron
+  const esVercelCron = Boolean(req.headers?.['x-vercel-cron'] || req.headers?.authorization?.includes(process.env.CRON_SECRET));
+  if (esVercelCron) {
+    console.log('[Vercel Cron] Invocación horaria programada detectada (0 * * * *). Ejecutando MTFA y alertas Push...');
+  }
 
   try {
     // 1. Inicialización defensiva de Supabase
@@ -1230,6 +1445,43 @@ export default async function handler(req, res) {
       }
     }
 
+    // 4.b. Identificación de Señales de Alta Convicción y Despacho Push Telegram (Anti-Spam)
+    const oportunidadesTelegram = screenerResults.filter(r =>
+      r.status === 'CALCULATED' && (r.dictamen === 'STRONG_BUY' || r.dictamen === 'STRONG_SELL')
+    );
+
+    let telegramTelemetry = {
+      detectadas: oportunidadesTelegram.length,
+      despachado: false,
+      motivo: oportunidadesTelegram.length === 0 ? 'NO_STRONG_SIGNALS' : 'DISPATCHED_ASYNC'
+    };
+
+    if (oportunidadesTelegram.length > 0) {
+      const mensajeConsolidado = construirMensajeConsolidadoTelegram(oportunidadesTelegram, estrategiaActiva);
+      telegramTelemetry.despachado = true;
+
+      // Disparo asíncrono no bloqueante: la promesa se resuelve en background
+      // y no interrumpe ni retrasa la respuesta HTTP 200 hacia el cliente o cron-job.
+      const promesaTelegram = enviarAlertaTelegram(mensajeConsolidado)
+        .then((resTele) => {
+          if (resTele?.enviado) {
+            console.log(`[Telegram Push] Alerta consolidada enviada exitosamente (${oportunidadesTelegram.length} oportunidades).`);
+          } else {
+            console.warn('[Telegram Push] Telegram no entregó el mensaje:', resTele?.motivo || resTele?.error);
+          }
+          return resTele;
+        })
+        .catch((errTele) => {
+          console.error('[Telegram Push] Error no controlado en worker asíncrono:', errTele.message);
+          return { enviado: false, error: errTele.message };
+        });
+
+      // Si el cliente solicita explícitamente sincronía (ej. tests o scripts de verificación)
+      if (query.wait_telegram === 'true' || body.wait_telegram === true) {
+        await promesaTelegram;
+      }
+    }
+
     const duracionMs = Math.round(performance.now() - inicio);
 
     // 5. Ordenamiento institucional: CondorScores válidos arriba en orden descendente, nulls abajo
@@ -1242,7 +1494,7 @@ export default async function handler(req, res) {
       return a.activo.localeCompare(b.activo);
     });
 
-    // 6. Respuesta HTTP 200 con formato institucional garantizando los 41 activos y MTFA
+    // 6. Respuesta HTTP 200 con formato institucional garantizando los 75+ activos, MTFA y Push Telegram
     return res.status(200).json({
       status: "success",
       timestamp: new Date().toISOString(),
@@ -1253,6 +1505,7 @@ export default async function handler(req, res) {
       totalAnalizados: screenerResults.length,
       alertasGeneradas: alertasParaGuardar.length,
       alertasPersistidas,
+      telegram: telegramTelemetry,
       screener: screenerResults
     });
 

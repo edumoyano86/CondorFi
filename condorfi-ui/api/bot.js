@@ -441,6 +441,12 @@ function calcularSpread(cotizaciones, moneda) {
 export default async function handler(req, res) {
   const inicio = performance.now();
 
+  // Detección de ejecución programada por Vercel Cron
+  const esVercelCron = Boolean(req.headers?.['x-vercel-cron'] || req.headers?.authorization?.includes(process.env.CRON_SECRET));
+  if (esVercelCron) {
+    console.log('[Vercel Cron] Invocación programada cada 15m detectada (*/15 * * * *). Iniciando recolección multi-exchange...');
+  }
+
   // Inicialización defensiva del cliente Supabase
   const rawUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
   const supabaseUrl = rawUrl ? rawUrl.replace(/\/rest\/v1\/?$/, '').replace(/\/$/, '') : null;
