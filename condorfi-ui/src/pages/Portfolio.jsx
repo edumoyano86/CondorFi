@@ -3,21 +3,29 @@
  * CondorFi - Gestor de Portafolio en Tiempo Real (Portfolio Tracker)
  * Archivo: condorfi-ui/src/pages/Portfolio.jsx
  * 
- * Módulo Institucional de Gestión de Cartera Activa y PnL Dinámico:
- * 1. Sincronización bidireccional con Supabase ('cartera_activa') y fallback
- *    persistente en localStorage para operación offline / simulada.
- * 2. Cruce en vivo con el Screener Cuantitativo (datosScreener) para mark-to-market.
- * 3. Cálculo de PnL Abierto nominal y porcentual por activo y consolidado.
- * 4. Exposición total y ponderación de riesgo de la cartera.
- * 5. Reacción instantánea al CurrencyContext (ARS/USD) y tasa de cambio USDT/ARS.
- * 6. Registro modal de nuevas posiciones y eliminación interactiva.
+ * Módulo Institucional de Gestión de Cartera Activa y Mark-to-Market en Vivo:
+ * 1. Multiplicador FX Obligatorio:
+ *    - Activos USD visualizados en ARS: Cantidad * Precio USD * Tasa Dólar en Vivo.
+ *    - Activos ARS visualizados en USD: (Cantidad * Precio ARS) / Tasa Dólar en Vivo.
+ * 2. Cotización y Sincronización en Tiempo Real:
+ *    - Descarta valores estáticos/mock. Cruza tickers con /api/scrapper-tradfi (Yahoo Finance)
+ *      y feeds de CriptoYa, inyectando las cotizaciones en el estado de la cartera.
+ * 3. Formateo Financiero con Separador de Miles:
+ *    - Cifras en ARS formateadas con notación 'es-AR' (ej. $1.448.480 ARS).
+ *    - Cifras en USD formateadas con notación 'en-US' (ej. $2,145.00 USD).
+ * 4. Combobox de Autocomplete Unificado sin límites arbitrarios (270+ activos).
  * ==============================================================================
  */
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { useCurrency } from '../context/CurrencyContext';
+import {
+  useCurrency,
+  convertirValorFX,
+  formatearMonto,
+  determinarMonedaNativa
+} from '../context/CurrencyContext';
 import { useAuth } from '../context/AuthContext';
 import {
   ACCIONES_TECH,
@@ -45,7 +53,9 @@ import {
   Search,
   CheckCircle2,
   ChevronDown,
-  X
+  X,
+  Radio,
+  Zap
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -169,6 +179,15 @@ const CARTERA_SEMILLA = [
   },
   {
     id: 3,
+    ticker: 'VIG',
+    tipo_mercado: 'tradfi',
+    cantidad: 11,
+    precio_compra_promedio: 80.0,
+    moneda: 'USD',
+    fecha_ingreso: '2026-10-10T14:00:00Z'
+  },
+  {
+    id: 4,
     ticker: 'SPY',
     tipo_mercado: 'tradfi',
     cantidad: 18,
@@ -177,7 +196,7 @@ const CARTERA_SEMILLA = [
     fecha_ingreso: '2026-09-15T18:00:00Z'
   },
   {
-    id: 4,
+    id: 5,
     ticker: 'NVDA',
     tipo_mercado: 'tradfi',
     cantidad: 35,
@@ -186,7 +205,7 @@ const CARTERA_SEMILLA = [
     fecha_ingreso: '2026-09-25T14:20:00Z'
   },
   {
-    id: 5,
+    id: 6,
     ticker: 'AL30.BA',
     tipo_mercado: 'tradfi',
     cantidad: 4500,
@@ -195,7 +214,7 @@ const CARTERA_SEMILLA = [
     fecha_ingreso: '2026-09-28T16:45:00Z'
   },
   {
-    id: 6,
+    id: 7,
     ticker: 'GGAL.BA',
     tipo_mercado: 'tradfi',
     cantidad: 800,
@@ -221,7 +240,9 @@ export default function Portfolio() {
   const {
     monedaGlobal,
     tasaCambio,
+    fuenteTasa,
     formatearPrecio,
+    formatearMonto: formatMontoCtx,
     convertirMonto
   } = useCurrency();
   const { user } = useAuth();
@@ -247,6 +268,11 @@ export default function Portfolio() {
   const [filtroBusqueda, setFiltroBusqueda] = useState('');
   const [filtroMercado, setFiltroMercado] = useState('todos');
 
+  // Precios en vivo capturados directamente de APIs remotas para erradicar mocks
+  const [preciosEnVivo, setPreciosEnVivo] = useState({});
+  const [cargandoPreciosVivo, setCargandoPreciosVivo] = useState(false);
+  const [ultimaCapturaEnVivo, setUltimaCapturaEnVivo] = useState(null);
+
   // Formulario de nueva posición y Autocomplete Combobox
   const [nuevoTicker, setNuevoTicker] = useState('BTC');
   const [busquedaTicker, setBusquedaTicker] = useState('BTC');
@@ -271,7 +297,97 @@ export default function Portfolio() {
     };
   }, []);
 
-  // Catálogo unificado enriquecido con cotizaciones en tiempo real del Screener
+  /**
+   * Sincronización en Vivo de Cotizaciones Reales para la Cartera
+   * Realiza una consulta directa a /api/scrapper-tradfi (Yahoo Finance) y CriptoYa
+   * para obtener los precios actuales de todos los activos guardados.
+   */
+  const sincronizarPreciosEnVivo = useCallback(async () => {
+    if (!posiciones || posiciones.length === 0) return;
+
+    const tickersUnicos = Array.from(new Set(
+      posiciones.map(p => (p.ticker || '').toUpperCase().trim())
+    )).filter(Boolean);
+
+    if (tickersUnicos.length === 0) return;
+
+    setCargandoPreciosVivo(true);
+
+    try {
+      // 1. Extraer activos TradFi (Wall Street, ETFs, Bonos, BYMA)
+      const tickersTradFi = tickersUnicos.filter(t => !['BTC', 'ETH', 'SOL', 'USDT', 'BNB', 'XRP', 'LTC', 'ADA', 'DOGE'].includes(t));
+      if (tickersTradFi.length > 0) {
+        try {
+          const res = await fetch(`/api/scrapper-tradfi?tickers=${tickersTradFi.join(',')}`);
+          if (res.ok) {
+            const json = await res.json();
+            const listaActivos = json.activos || json.screener || json.datos || [];
+            if (Array.isArray(listaActivos) && listaActivos.length > 0) {
+              setPreciosEnVivo(prev => {
+                const copia = { ...prev };
+                listaActivos.forEach(item => {
+                  const sym = (item.ticker || item.activo || '').toUpperCase();
+                  const pActual = Number(item.precio_actual ?? item.precioActual ?? 0);
+                  const pApertura = Number(item.precio_apertura ?? item.precioApertura ?? pActual);
+                  if (sym && pActual > 0) {
+                    copia[sym] = {
+                      precio_actual: pActual,
+                      precio_apertura: pApertura,
+                      moneda: item.moneda || 'USD',
+                      variacion24h: item.variacion24h ?? (pApertura > 0 ? ((pActual - pApertura) / pApertura) * 100 : 0),
+                      timestamp: new Date().toISOString()
+                    };
+                  }
+                });
+                return copia;
+              });
+            }
+          }
+        } catch (eTradFi) {
+          console.warn('[Portfolio] Error al consultar /api/scrapper-tradfi:', eTradFi);
+        }
+      }
+
+      // 2. Extraer activos Cripto (consultar cotizaciones en ARS de exchanges locales)
+      const tickersCripto = tickersUnicos.filter(t => ['BTC', 'ETH', 'SOL', 'USDT', 'BNB', 'XRP', 'LTC'].includes(t));
+      for (const cTicker of tickersCripto) {
+        try {
+          const resCripto = await fetch(`https://criptoya.com/api/binance/${cTicker.toLowerCase()}/ars`);
+          if (resCripto.ok) {
+            const dataC = await resCripto.json();
+            const precioCripto = Number(dataC.ask || dataC.bid || dataC.totalAsk);
+            if (precioCripto > 0) {
+              setPreciosEnVivo(prev => ({
+                ...prev,
+                [cTicker]: {
+                  precio_actual: precioCripto,
+                  precio_apertura: precioCripto,
+                  moneda: 'ARS',
+                  variacion24h: 0,
+                  timestamp: new Date().toISOString()
+                }
+              }));
+            }
+          }
+        } catch {}
+      }
+
+      setUltimaCapturaEnVivo(new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    } catch (err) {
+      console.warn('[Portfolio] Error general al sincronizar precios en vivo:', err);
+    } finally {
+      setCargandoPreciosVivo(false);
+    }
+  }, [posiciones]);
+
+  // Sincronización automática de precios al montar y periódicamente cada 45s
+  useEffect(() => {
+    sincronizarPreciosEnVivo();
+    const timer = setInterval(sincronizarPreciosEnVivo, 45000);
+    return () => clearInterval(timer);
+  }, [sincronizarPreciosEnVivo]);
+
+  // Catálogo unificado enriquecido con cotizaciones en tiempo real del Screener y Precios en Vivo
   const catalogoCombinado = useMemo(() => {
     const mapa = new Map();
 
@@ -296,8 +412,20 @@ export default function Portfolio() {
       }
     });
 
+    // 3. Enriquecer con cotizaciones remotas en vivo recientes
+    Object.entries(preciosEnVivo).forEach(([sym, datos]) => {
+      const previo = mapa.get(sym);
+      if (previo && datos.precio_actual > 0) {
+        mapa.set(sym, {
+          ...previo,
+          precioActual: datos.precio_actual,
+          moneda: datos.moneda || previo.moneda
+        });
+      }
+    });
+
     return Array.from(mapa.values());
-  }, [datosScreener]);
+  }, [datosScreener, preciosEnVivo]);
 
   // Filtrado en tiempo real sin límites arbitrarios (sin .slice())
   const opcionesFiltradas = useMemo(() => {
@@ -317,7 +445,8 @@ export default function Portfolio() {
   const handleSeleccionarActivo = (item) => {
     setNuevoTicker(item.ticker);
     setBusquedaTicker(item.ticker);
-    setNuevaMoneda(item.moneda || 'USD');
+    const monedaEstimada = determinarMonedaNativa(item.ticker, item.tipoMercado, item.moneda);
+    setNuevaMoneda(monedaEstimada);
     setNuevoTipoMercado(item.tipoMercado || 'tradfi');
     if (item.precioActual) {
       setNuevoPrecioCompra(String(item.precioActual));
@@ -325,7 +454,7 @@ export default function Portfolio() {
     setDropdownAbierto(false);
   };
 
-  // 1. Cargar posiciones desde Supabase si está disponible (con aislamiento RLS por usuario)
+  // Cargar posiciones desde Supabase si está disponible (con aislamiento RLS por usuario)
   const cargarPosicionesSupabase = useCallback(async () => {
     if (!supabase) return;
     setCargandoPosiciones(true);
@@ -335,7 +464,6 @@ export default function Portfolio() {
         .select('*');
 
       if (user && user.id) {
-        // En Supabase con RLS se filtra automáticamente, pero explicitamos para consistencia
         query = query.or(`user_id.eq.${user.id},user_id.is.null`);
       }
 
@@ -361,37 +489,58 @@ export default function Portfolio() {
     const itemScreener = catalogoCombinado.find(d => d.ticker.toUpperCase() === nuevoTicker.toUpperCase());
     if (itemScreener) {
       setNuevoTipoMercado(itemScreener.tipoMercado || 'tradfi');
-      setNuevaMoneda(itemScreener.moneda || 'USD');
+      setNuevaMoneda(determinarMonedaNativa(itemScreener.ticker, itemScreener.tipoMercado, itemScreener.moneda));
       if (itemScreener.precioActual && !nuevoPrecioCompra) {
         setNuevoPrecioCompra(String(itemScreener.precioActual));
       }
     }
   }, [nuevoTicker, catalogoCombinado, nuevoPrecioCompra]);
 
-  // 2. Cruce de datos de cartera con el feed de precios en vivo del Screener
+  /**
+   * =========================================================================
+   * CÁLCULO CUANTITATIVO CON MULTIPLICADOR FX Y COTIZACIONES EN VIVO
+   * =========================================================================
+   */
   const posicionesConMetricas = useMemo(() => {
     return posiciones.map(pos => {
-      const tickerClean = (pos.ticker || '').toUpperCase();
-      const screenerMatch = datosScreener.find(d => d.activo.toUpperCase() === tickerClean);
+      const tickerClean = (pos.ticker || '').toUpperCase().trim();
+      const screenerMatch = datosScreener.find(d => (d.activo || d.ticker || '').toUpperCase() === tickerClean);
+      const enVivoMatch = preciosEnVivo[tickerClean];
 
-      // Moneda nativa del instrumento
-      const monedaNativa = pos.moneda || screenerMatch?.moneda || ((tickerClean === '^MERV' || tickerClean.endsWith('.BA')) ? 'ARS' : 'USD');
+      // 1. Determinación de la moneda nativa estricta (VIG, SPY, etc. son SIEMPRE USD)
+      const monedaNativa = determinarMonedaNativa(tickerClean, pos.tipo_mercado, pos.moneda);
       
-      // Precio actual en vivo
-      const precioActual = Number(screenerMatch?.precioActual || pos.precio_compra_promedio);
+      // 2. Precio actual en vivo: prioridad máxima a la cotización fresca remota
+      let precioActual = Number(pos.precio_compra_promedio);
+      let esPrecioEnVivo = false;
+
+      if (enVivoMatch && enVivoMatch.precio_actual > 0) {
+        precioActual = Number(enVivoMatch.precio_actual);
+        esPrecioEnVivo = true;
+      } else if (screenerMatch && screenerMatch.precioActual > 0) {
+        precioActual = Number(screenerMatch.precioActual);
+        esPrecioEnVivo = true;
+      }
+
       const precioCompra = Number(pos.precio_compra_promedio);
       const cantidad = Number(pos.cantidad);
 
-      // Métricas en moneda nativa
+      // 3. Métricas en moneda nativa
       const costoTotalNativo = cantidad * precioCompra;
       const valorMercadoNativo = cantidad * precioActual;
       const pnlNominalNativo = valorMercadoNativo - costoTotalNativo;
       const pnlPct = precioCompra > 0 ? ((precioActual - precioCompra) / precioCompra) * 100 : 0;
 
-      // Conversión multidivisa reactiva a monedaGlobal (ARS/USD)
-      const costoConvertido = convertirMonto(costoTotalNativo, monedaNativa);
-      const valorConvertido = convertirMonto(valorMercadoNativo, monedaNativa);
+      // 4. Multiplicador FX Obligatorio hacia monedaGlobal ('ARS' o 'USD'):
+      //    Si monedaGlobal es 'ARS' y activo es USD: valorConvertido = valorMercadoNativo * tasaCambio
+      //    Si monedaGlobal es 'USD' y activo es ARS: valorConvertido = valorMercadoNativo / tasaCambio
+      const costoConvertido = convertirValorFX(costoTotalNativo, monedaNativa, monedaGlobal, tasaCambio);
+      const valorConvertido = convertirValorFX(valorMercadoNativo, monedaNativa, monedaGlobal, tasaCambio);
       const pnlNominalConvertido = valorConvertido - costoConvertido;
+
+      // Precios unitarios convertidos a la moneda global para visualización
+      const precioActualConvertido = convertirValorFX(precioActual, monedaNativa, monedaGlobal, tasaCambio);
+      const precioCompraConvertido = convertirValorFX(precioCompra, monedaNativa, monedaGlobal, tasaCambio);
 
       return {
         ...pos,
@@ -402,7 +551,7 @@ export default function Portfolio() {
         condorScore: screenerMatch?.condorScore ?? null,
         dictamen: screenerMatch?.dictamen ?? 'HOLD',
         alineacionTemporal: screenerMatch?.alineacion_temporal ?? 'NEUTRAL',
-        variacion24h: screenerMatch?.variacion24h ?? 0,
+        variacion24h: enVivoMatch?.variacion24h ?? screenerMatch?.variacion24h ?? 0,
         monedaNativa,
         cantidad,
         precioCompra,
@@ -413,12 +562,15 @@ export default function Portfolio() {
         pnlPct,
         costoConvertido,
         valorConvertido,
-        pnlNominalConvertido
+        pnlNominalConvertido,
+        precioActualConvertido,
+        precioCompraConvertido,
+        esPrecioEnVivo
       };
     });
-  }, [posiciones, datosScreener, convertirMonto]);
+  }, [posiciones, datosScreener, preciosEnVivo, monedaGlobal, tasaCambio]);
 
-  // 3. Métricas agregadas de Portafolio Total
+  // Métricas agregadas de Portafolio Total
   const metricasConsolidadas = useMemo(() => {
     const exposicionTotal = posicionesConMetricas.reduce((acc, p) => acc + p.valorConvertido, 0);
     const costoTotal = posicionesConMetricas.reduce((acc, p) => acc + p.costoConvertido, 0);
@@ -451,7 +603,7 @@ export default function Portfolio() {
     };
   }, [posicionesConMetricas]);
 
-  // 4. Ponderación por activo para la tabla y gráficos
+  // Ponderación por activo para la tabla y gráficos
   const posicionesConPonderacion = useMemo(() => {
     const total = metricasConsolidadas.exposicionTotal || 1;
     return posicionesConMetricas.map(p => ({
@@ -481,7 +633,7 @@ export default function Portfolio() {
       .sort((a, b) => b.value - a.value);
   }, [posicionesConPonderacion]);
 
-  // 5. Manejo de Altas y Bajas
+  // Manejo de Altas y Bajas
   const agregarPosicion = async (e) => {
     e.preventDefault();
     const cant = parseFloat(nuevaCantidad);
@@ -492,17 +644,20 @@ export default function Portfolio() {
       return;
     }
 
+    const tUpper = nuevoTicker.toUpperCase().trim();
+    const monedaFinal = determinarMonedaNativa(tUpper, nuevoTipoMercado, nuevaMoneda);
+
     const nueva = {
       user_id: user?.id || null,
-      ticker: nuevoTicker.toUpperCase().trim(),
+      ticker: tUpper,
       tipo_mercado: nuevoTipoMercado,
       cantidad: cant,
       precio_compra_promedio: precio,
-      moneda: nuevaMoneda,
+      moneda: monedaFinal,
       fecha_ingreso: new Date().toISOString()
     };
 
-    // 1. Guardar en Supabase si está disponible (con user_id para RLS)
+    // Guardar en Supabase si está disponible (con user_id para RLS)
     if (supabase) {
       try {
         const { data, error } = await supabase
@@ -527,8 +682,8 @@ export default function Portfolio() {
       localStorage.setItem(storageKey, JSON.stringify(actualizadas));
     } catch {}
 
-    setMensajeExito(`Posición ${nueva.ticker} añadida exitosamente.`);
-    setTimeout(() => setMensajeExito(null), 3000);
+    setMensajeExito(`Posición ${nueva.ticker} (${monedaFinal}) añadida exitosamente.`);
+    setTimeout(() => setMensajeExito(null), 3500);
     setModalAbierto(false);
     setNuevaCantidad('');
     setNuevoPrecioCompra('');
@@ -572,25 +727,30 @@ export default function Portfolio() {
               <h2 className="text-xl font-bold font-mono text-slate-900 tracking-tight">
                 Cartera Activa Institucional
               </h2>
-              <span className="px-2 py-0.5 text-[10px] font-mono font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                Live Mark-to-Market
+              <span className="flex items-center gap-1 px-2 py-0.5 text-[10px] font-mono font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                Mark-to-Market ({monedaGlobal})
               </span>
             </div>
             <p className="text-xs text-slate-500 font-sans mt-0.5">
-              Valuación de activos en tiempo real cruzada con el Motor Cuantitativo y paridad {monedaGlobal}.
+              Valuación cruzada en tiempo real: Paridad FX ${tasaCambio.toLocaleString('es-AR', { maximumFractionDigits: 1 })} ARS/USD ({fuenteTasa})
+              {ultimaCapturaEnVivo && ` • Feed ${ultimaCapturaEnVivo}`}
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-2.5">
           <button
-            onClick={cargarPosicionesSupabase}
-            disabled={cargandoPosiciones}
+            onClick={() => {
+              cargarPosicionesSupabase();
+              sincronizarPreciosEnVivo();
+            }}
+            disabled={cargandoPosiciones || cargandoPreciosVivo}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-mono font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-200 transition cursor-pointer"
-            title="Sincronizar con Supabase"
+            title="Refrescar cotizaciones reales y base de datos"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${cargandoPosiciones ? 'animate-spin text-orange-600' : ''}`} />
-            <span className="hidden md:inline">Sincronizar</span>
+            <RefreshCw className={`w-3.5 h-3.5 ${cargandoPosiciones || cargandoPreciosVivo ? 'animate-spin text-orange-600' : ''}`} />
+            <span className="hidden md:inline">{cargandoPreciosVivo ? 'Sincronizando...' : 'Sincronizar'}</span>
           </button>
 
           <button
@@ -615,7 +775,7 @@ export default function Portfolio() {
       )}
 
       {/* =========================================================================
-          2. CARDS DE MÉTRICAS GLOBALES (KPIs INSTITUCIONALES)
+          2. CARDS DE MÉTRICAS GLOBALES (KPIS CON SEPARADOR DE MILES)
       ========================================================================== */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Card 1: Exposición Total */}
@@ -628,7 +788,7 @@ export default function Portfolio() {
           </div>
           <div>
             <div className="text-2xl lg:text-3xl font-black font-mono text-slate-900 tracking-tight">
-              {formatearPrecio(metricasConsolidadas.exposicionTotal, monedaGlobal, { mostrarCodigo: true })}
+              {formatearMonto(metricasConsolidadas.exposicionTotal, monedaGlobal, { mostrarCodigo: true })}
             </div>
             <div className="flex items-center gap-2 mt-2 text-xs font-mono">
               <span className="text-slate-400">Activos:</span>
@@ -662,7 +822,7 @@ export default function Portfolio() {
             }`}>
               <span>
                 {metricasConsolidadas.pnlNominalTotal >= 0 ? '+' : ''}
-                {formatearPrecio(metricasConsolidadas.pnlNominalTotal, monedaGlobal, { mostrarCodigo: true })}
+                {formatearMonto(metricasConsolidadas.pnlNominalTotal, monedaGlobal, { mostrarCodigo: true })}
               </span>
             </div>
             <div className="flex items-center gap-1.5 mt-2">
@@ -689,10 +849,10 @@ export default function Portfolio() {
           </div>
           <div>
             <div className="text-2xl lg:text-3xl font-black font-mono text-slate-900 tracking-tight">
-              {formatearPrecio(metricasConsolidadas.costoTotal, monedaGlobal, { mostrarCodigo: true })}
+              {formatearMonto(metricasConsolidadas.costoTotal, monedaGlobal, { mostrarCodigo: true })}
             </div>
             <div className="flex items-center gap-2 mt-2 text-xs font-mono text-slate-500">
-              <span>Capital desembolsado original</span>
+              <span>Capital desembolsado original ({monedaGlobal})</span>
             </div>
           </div>
         </div>
@@ -716,7 +876,7 @@ export default function Portfolio() {
                 </span>
               </div>
               <div className="text-xs font-mono text-slate-500 mt-2 truncate">
-                PnL: +{formatearPrecio(metricasConsolidadas.mejorActivo.pnlNominalConvertido, monedaGlobal)}
+                PnL: +{formatearMonto(metricasConsolidadas.mejorActivo.pnlNominalConvertido, monedaGlobal, { mostrarCodigo: true })}
               </div>
             </div>
           ) : (
@@ -755,52 +915,49 @@ export default function Portfolio() {
             </div>
 
             <div className="space-y-3 font-mono text-xs">
-              <div className="flex items-center justify-between p-2.5 rounded-xl bg-orange-50/60 border border-orange-100">
+              <div className="flex items-center justify-between p-2 rounded-xl bg-orange-50/60 border border-orange-100">
                 <div className="flex items-center gap-2">
-                  <span className="w-3 h-3 rounded-full bg-orange-500"></span>
-                  <span className="font-bold text-slate-800">Criptomonedas</span>
+                  <span className="w-2.5 h-2.5 rounded-full bg-orange-500"></span>
+                  <span className="font-semibold text-slate-800">Criptoactivos</span>
                 </div>
                 <div className="text-right">
-                  <div className="font-bold text-slate-900">
-                    {formatearPrecio(metricasConsolidadas.exposicionCripto, monedaGlobal)}
-                  </div>
-                  <div className="text-[10px] text-slate-500">
-                    {metricasConsolidadas.pctCripto.toFixed(1)}% del total
-                  </div>
+                  <span className="font-bold text-slate-900">
+                    {formatearMonto(metricasConsolidadas.exposicionCripto, monedaGlobal)}
+                  </span>
+                  <span className="text-slate-400 ml-1.5">({metricasConsolidadas.pctCripto.toFixed(1)}%)</span>
                 </div>
               </div>
 
-              <div className="flex items-center justify-between p-2.5 rounded-xl bg-blue-50/60 border border-blue-100">
+              <div className="flex items-center justify-between p-2 rounded-xl bg-blue-50/60 border border-blue-100">
                 <div className="flex items-center gap-2">
-                  <span className="w-3 h-3 rounded-full bg-blue-600"></span>
-                  <span className="font-bold text-slate-800">Renta Variable & Bonos</span>
+                  <span className="w-2.5 h-2.5 rounded-full bg-blue-600"></span>
+                  <span className="font-semibold text-slate-800">TradFi (Wall Street & BYMA)</span>
                 </div>
                 <div className="text-right">
-                  <div className="font-bold text-slate-900">
-                    {formatearPrecio(metricasConsolidadas.exposicionTradfi, monedaGlobal)}
-                  </div>
-                  <div className="text-[10px] text-slate-500">
-                    {metricasConsolidadas.pctTradfi.toFixed(1)}% del total
-                  </div>
+                  <span className="font-bold text-slate-900">
+                    {formatearMonto(metricasConsolidadas.exposicionTradfi, monedaGlobal)}
+                  </span>
+                  <span className="text-slate-400 ml-1.5">({metricasConsolidadas.pctTradfi.toFixed(1)}%)</span>
                 </div>
               </div>
             </div>
           </div>
 
-          <div className="pt-4 border-t border-slate-100 text-[11px] font-mono text-slate-400 mt-4">
-            Paridad activa: <strong className="text-slate-700">{monedaGlobal}</strong> • Reevaluado cada 15s.
+          <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-[11px] font-mono text-slate-500">
+            <span>Tasa FX Aplicada:</span>
+            <strong className="text-slate-800">${tasaCambio.toLocaleString('es-AR')} ARS/USD</strong>
           </div>
         </div>
 
-        {/* Gráfico de Ponderación por Activo */}
+        {/* Gráfico de Barras: Exposición por Activo */}
         <div className="lg:col-span-2 bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center justify-between mb-2">
             <div>
               <h3 className="text-xs font-mono uppercase tracking-wider font-bold text-slate-700">
                 Ponderación de Cartera por Activo (Weight %)
               </h3>
               <p className="text-[11px] text-slate-500 font-sans">
-                Exposición relativa de capital convertida a {monedaGlobal}
+                Exposición relativa convertida a {monedaGlobal} con separador de miles
               </p>
             </div>
           </div>
@@ -818,7 +975,7 @@ export default function Portfolio() {
                         <div className="bg-slate-900 text-white p-2.5 rounded-xl border border-slate-700 shadow-xl text-xs font-mono">
                           <p className="font-bold text-orange-400">{d.name}</p>
                           <p className="text-slate-300">
-                            Valor: {formatearPrecio(d.value, monedaGlobal, { mostrarCodigo: true })}
+                            Valor: {formatearMonto(d.value, monedaGlobal, { mostrarCodigo: true })}
                           </p>
                           <p className="text-emerald-400">Ponderación: {d.pct}%</p>
                         </div>
@@ -886,8 +1043,14 @@ export default function Portfolio() {
             </div>
           </div>
 
-          <div className="text-xs font-mono text-slate-500">
-            Mostrando <strong>{posicionesFiltradas.length}</strong> de <strong>{posiciones.length}</strong> posiciones
+          <div className="text-xs font-mono text-slate-500 flex items-center gap-2">
+            {cargandoPreciosVivo && (
+              <span className="flex items-center gap-1 text-orange-600">
+                <RefreshCw className="w-3 h-3 animate-spin" />
+                <span>Actualizando quotes...</span>
+              </span>
+            )}
+            <span>Mostrando <strong>{posicionesFiltradas.length}</strong> de <strong>{posiciones.length}</strong> posiciones</span>
           </div>
         </div>
 
@@ -899,8 +1062,9 @@ export default function Portfolio() {
                 <th className="py-3 px-4">Activo / Instrumento</th>
                 <th className="py-3 px-3 text-right">Cantidad</th>
                 <th className="py-3 px-3 text-right">Precio Compra</th>
-                <th className="py-3 px-3 text-right">Precio Actual</th>
+                <th className="py-3 px-3 text-right">Precio Actual en Vivo</th>
                 <th className="py-3 px-3 text-right">Exposición ({monedaGlobal})</th>
+                <th className="py-3 px-3 text-right">Costo Base ({monedaGlobal})</th>
                 <th className="py-3 px-3 text-right">PnL Abierto ({monedaGlobal})</th>
                 <th className="py-3 px-3 text-right">Retorno %</th>
                 <th className="py-3 px-3 text-center">Peso</th>
@@ -911,7 +1075,7 @@ export default function Portfolio() {
             <tbody className="divide-y divide-slate-100 font-mono text-xs">
               {posicionesFiltradas.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="py-8 text-center text-slate-400 font-mono text-xs">
+                  <td colSpan={11} className="py-8 text-center text-slate-400 font-mono text-xs">
                     No se encontraron posiciones activas coincidentes con el filtro.
                   </td>
                 </tr>
@@ -936,6 +1100,9 @@ export default function Portfolio() {
                               <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-100 text-slate-600 border border-slate-200">
                                 {pos.monedaNativa}
                               </span>
+                              {pos.esPrecioEnVivo && (
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" title="Cotización remota en vivo" />
+                              )}
                             </div>
                             <span className="text-[11px] text-slate-500 font-sans block truncate max-w-[140px]">
                               {pos.nombre}
@@ -949,36 +1116,50 @@ export default function Portfolio() {
                         {pos.cantidad.toLocaleString(undefined, { maximumFractionDigits: 6 })}
                       </td>
 
-                      {/* Precio de Compra */}
+                      {/* Precio de Compra (Nativo y convertido si difiere) */}
                       <td className="py-3.5 px-3 text-right text-slate-600">
-                        <div>{formatearPrecio(pos.precioCompra, pos.monedaNativa)}</div>
-                        <div className="text-[10px] text-slate-400">
-                          {pos.monedaNativa !== monedaGlobal ? `(${formatearPrecio(pos.precioCompra, pos.monedaNativa, { mostrarCodigo: false })})` : ''}
+                        <div className="font-semibold text-slate-800">
+                          {formatearMonto(pos.precioCompra, pos.monedaNativa, { mostrarCodigo: true })}
                         </div>
+                        {pos.monedaNativa !== monedaGlobal && (
+                          <div className="text-[10px] text-slate-400">
+                            ≈ {formatearMonto(pos.precioCompraConvertido, monedaGlobal)}
+                          </div>
+                        )}
                       </td>
 
                       {/* Precio Actual en Vivo */}
                       <td className="py-3.5 px-3 text-right font-bold text-slate-900">
                         <div className="flex items-center justify-end gap-1.5">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                          <span>{formatearPrecio(pos.precioActual, pos.monedaNativa)}</span>
+                          <span className={`w-1.5 h-1.5 rounded-full ${pos.esPrecioEnVivo ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'}`}></span>
+                          <span>{formatearMonto(pos.precioActual, pos.monedaNativa, { mostrarCodigo: true })}</span>
                         </div>
+                        {pos.monedaNativa !== monedaGlobal && (
+                          <div className="text-[10px] text-slate-400 font-normal">
+                            ≈ {formatearMonto(pos.precioActualConvertido, monedaGlobal)}
+                          </div>
+                        )}
                         <div className={`text-[10px] ${pos.variacion24h >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                           {pos.variacion24h >= 0 ? '+' : ''}{pos.variacion24h.toFixed(2)}% (24h)
                         </div>
                       </td>
 
                       {/* Exposición Actual en Moneda Global */}
-                      <td className="py-3.5 px-3 text-right font-bold text-slate-900">
-                        {formatearPrecio(pos.valorConvertido, monedaGlobal)}
+                      <td className="py-3.5 px-3 text-right font-black text-slate-900">
+                        {formatearMonto(pos.valorConvertido, monedaGlobal, { mostrarCodigo: true })}
+                      </td>
+
+                      {/* Costo Base en Moneda Global */}
+                      <td className="py-3.5 px-3 text-right font-medium text-slate-600">
+                        {formatearMonto(pos.costoConvertido, monedaGlobal)}
                       </td>
 
                       {/* PnL Abierto Nominal */}
-                      <td className={`py-3.5 px-3 text-right font-bold ${
+                      <td className={`py-3.5 px-3 text-right font-black ${
                         esGanancia ? 'text-emerald-600' : 'text-rose-600'
                       }`}>
                         {esGanancia ? '+' : ''}
-                        {formatearPrecio(pos.pnlNominalConvertido, monedaGlobal)}
+                        {formatearMonto(pos.pnlNominalConvertido, monedaGlobal, { mostrarCodigo: true })}
                       </td>
 
                       {/* PnL Abierto % */}
@@ -1006,7 +1187,7 @@ export default function Portfolio() {
                         </div>
                       </td>
 
-                      {/* Quant Score & Convergence */}
+                      {/* Quant Score & Dictamen */}
                       <td className="py-3.5 px-3 text-center">
                         {pos.condorScore !== null ? (
                           <div className="flex flex-col items-center">
@@ -1099,7 +1280,7 @@ export default function Portfolio() {
                       setDropdownAbierto(true);
                     }}
                     onFocus={() => setDropdownAbierto(true)}
-                    placeholder="Buscar por ticker o nombre (ej. NVDA, BTC, SPY, AL30)..."
+                    placeholder="Buscar por ticker o nombre (ej. VIG, NVDA, BTC, AL30)..."
                     className="w-full pl-9 pr-10 py-2.5 rounded-xl border border-slate-200 bg-white font-mono text-xs focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 focus:outline-none uppercase"
                   />
                   <button
@@ -1145,7 +1326,7 @@ export default function Portfolio() {
                             <div className="text-right shrink-0 ml-2">
                               {item.precioActual ? (
                                 <span className="font-mono text-xs font-bold text-slate-900 block">
-                                  ${Number(item.precioActual).toLocaleString('es-AR', { maximumFractionDigits: 2 })}
+                                  {formatearMonto(item.precioActual, item.moneda || 'USD')}
                                 </span>
                               ) : null}
                               <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded font-bold ${
@@ -1184,7 +1365,7 @@ export default function Portfolio() {
                     type="number"
                     step="any"
                     required
-                    placeholder="ej. 0.5 o 10"
+                    placeholder="ej. 11"
                     value={nuevaCantidad}
                     onChange={e => setNuevaCantidad(e.target.value)}
                     className="w-full p-2.5 rounded-xl border border-slate-200 font-mono text-xs focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 focus:outline-none"
@@ -1208,13 +1389,13 @@ export default function Portfolio() {
               {/* Precio de Compra */}
               <div>
                 <label className="block text-slate-700 font-bold mb-1.5">
-                  Precio de Compra Promedio ({nuevaMoneda}):
+                  Precio de Compra Unitario ({nuevaMoneda}):
                 </label>
                 <input
                   type="number"
                   step="any"
                   required
-                  placeholder="ej. 745.50"
+                  placeholder="ej. 80.00"
                   value={nuevoPrecioCompra}
                   onChange={e => setNuevoPrecioCompra(e.target.value)}
                   className="w-full p-2.5 rounded-xl border border-slate-200 font-mono text-xs focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 focus:outline-none"
@@ -1223,10 +1404,10 @@ export default function Portfolio() {
 
               <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-[11px] text-slate-600 font-sans space-y-1">
                 <p>
-                  • El sistema registrará el costo base y calculará el PnL abierto continuo.
+                  • Activos de Wall Street (como VIG, SPY, NVDA) se liquidan en USD y se multiplican automáticamente por la tasa de cambio viva (${tasaCambio.toLocaleString('es-AR')} ARS/USD) cuando el visor esté en ARS.
                 </p>
                 <p>
-                  • Reacciona automáticamente al switch ARS/USD de la barra superior.
+                  • Todas las cifras se formatean con separador de miles oficial.
                 </p>
               </div>
 

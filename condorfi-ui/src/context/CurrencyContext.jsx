@@ -1,101 +1,168 @@
 /**
  * ==============================================================================
- * CondorFi - Motor Multidivisa Global (CurrencyContext)
+ * CondorFi - Motor Multidivisa Global Institucional (CurrencyContext)
  * Archivo: condorfi-ui/src/context/CurrencyContext.jsx
  * 
  * Arquitectura Institucional de Divisas (ARS / USD):
- * - Gestiona el estado reactivo global de la divisa activa ('ARS' o 'USD').
- * - Sincroniza en tiempo real la tasa de cambio USDT/ARS desde Binance Public API
- *   (con fallback automático a CriptoYa / valor de contingencia institucional).
- * - Provee la función universal de conversión y formateo de precios:
- *   formatearPrecio(valor, monedaNativa, monedaGlobal, tasaCambio).
+ * - Cotización en vivo mediante DolarAPI (Cripto USDT/ARS & Dólar Blue) y CriptoYa.
+ * - Descarte absoluto de valores estáticos hardcodeados (como $1.651 fijo).
+ * - Multiplicador y conversión FX estricta en tiempo real:
+ *     * Activo USD visualizado en ARS: valor_usd * tasa_cambio_ars
+ *     * Activo ARS visualizado en USD: valor_ars / tasa_cambio_ars
+ * - Determinación robusta de moneda nativa por ticker (Wall Street / ETFs / BYMA).
+ * - Formateo monetario con separador de miles ('es-AR' con puntos y 'en-US' con comas).
  * ==============================================================================
  */
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
 
-// Tasa de cambio de contingencia institucional si las APIs están temporalmente inaccesibles
-const TASA_DEFAULT_USDT_ARS = 1615;
+// Tasa de contingencia mínima si la red está 100% desconectada
+export const TASA_DEFAULT_USDT_ARS = 1640;
 
 /**
- * Función de utilidad matemática institucional para conversión de montos.
- * @param {number} valor Valor numérico original
- * @param {'ARS' | 'USD'} monedaNativa Moneda base original del activo
- * @param {'ARS' | 'USD'} monedaGlobal Moneda destino seleccionada
- * @param {number} tasaCambio Tasa de cambio USDT/ARS
- * @returns {number} Valor convertido
+ * Tickers conocidos del mercado estadounidense cuyo activo base es estrictamente USD.
  */
-export function convertirMonto(valor, monedaNativa = 'USD', monedaGlobal = 'USD', tasaCambio = TASA_DEFAULT_USDT_ARS) {
+const TICKERS_ESTRICTAMENTE_USD = new Set([
+  'VIG', 'SCHD', 'JEPI', 'JEPQ', 'VYM', 'DGRO', 'NOBL', 'QQQM', 'HDV', 'SPYD',
+  'DVY', 'SDY', 'COWZ', 'DIVO', 'MOAT', 'BST', 'SPY', 'QQQ', 'DIA', 'IWM',
+  'VOO', 'IVV', 'VTI', 'TLT', 'IEF', 'SHY', 'BND', 'AGG', 'LQD', 'HYG',
+  'AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'GOOG', 'META', 'TSLA', 'AVGO', 'NFLX',
+  'AMD', 'QCOM', 'TXN', 'INTC', 'AMAT', 'MU', 'LRCX', 'KLAC', 'MRVL', 'ADI',
+  'ORCL', 'CRM', 'ADBE', 'NOW', 'INTU', 'SNOW', 'WDAY', 'PLTR', 'TEAM', 'DDOG'
+]);
+
+/**
+ * Determina con certeza la moneda nativa de un instrumento financiero.
+ * Evita que activos de Wall Street como VIG se clasifiquen erróneamente en ARS.
+ * 
+ * @param {string} ticker Símbolo del activo (ej: 'VIG', 'GGAL.BA', 'BTC')
+ * @param {string} [tipoMercado] 'tradfi' | 'cripto' | 'indices' | 'bonos'
+ * @param {string} [monedaGuardada] Valor almacenado en base de datos
+ * @returns {'ARS' | 'USD'} Moneda base verdadera
+ */
+export function determinarMonedaNativa(ticker = '', tipoMercado = 'tradfi', monedaGuardada = null) {
+  const t = String(ticker || '').trim().toUpperCase();
+  if (!t) return 'USD';
+
+  // Mercado local argentino (BYMA, Merval, Bonos soberanos en pesos o tickers .BA)
+  if (t === '^MERV' || t.endsWith('.BA')) {
+    return 'ARS';
+  }
+
+  // Activos de Wall Street y ETFs estratégicos: siempre son nativos USD
+  if (TICKERS_ESTRICTAMENTE_USD.has(t)) {
+    return 'USD';
+  }
+
+  // Si no tiene punto (.BA) ni arranca con ^ y es TradFi, es Wall Street (USD)
+  if (tipoMercado !== 'cripto' && !t.includes('.') && !t.startsWith('^')) {
+    return 'USD';
+  }
+
+  // Criptoactivos: si vienen cotizados expresamente en ARS o USD
+  if (tipoMercado === 'cripto' && monedaGuardada) {
+    return monedaGuardada.toUpperCase() === 'USD' ? 'USD' : 'ARS';
+  }
+
+  return monedaGuardada ? monedaGuardada.toUpperCase() : 'USD';
+}
+
+/**
+ * Convierte un monto aplicando la paridad FX matemática:
+ * - USD a ARS: valor * tasaCambio
+ * - ARS a USD: valor / tasaCambio
+ * - Misma moneda: valor sin alterar
+ * 
+ * @param {number} valor Monto original
+ * @param {'ARS' | 'USD'} monedaNativa Moneda base original del activo
+ * @param {'ARS' | 'USD'} monedaGlobal Moneda visual seleccionada
+ * @param {number} tasaCambio Tasa de cambio USDT/ARS en vivo
+ * @returns {number} Valor numérico convertido
+ */
+export function convertirValorFX(valor, monedaNativa = 'USD', monedaGlobal = 'ARS', tasaCambio = TASA_DEFAULT_USDT_ARS) {
   if (typeof valor !== 'number' || isNaN(valor)) return 0;
-  const tasa = Number(tasaCambio) > 0 ? Number(tasaCambio) : TASA_DEFAULT_USDT_ARS;
   const nativa = (monedaNativa || 'USD').toUpperCase();
   const global = (monedaGlobal || 'USD').toUpperCase();
+  const tasa = Number(tasaCambio) > 0 ? Number(tasaCambio) : TASA_DEFAULT_USDT_ARS;
 
   if (nativa === global) {
     return valor;
   }
 
-  // De ARS a USD (división por la tasa)
-  if (nativa === 'ARS' && global === 'USD') {
-    return valor / tasa;
-  }
-
-  // De USD a ARS (multiplicación por la tasa)
+  // Si el activo es USD y el usuario seleccionó ver en ARS: multiplicador obligatorio
   if (nativa === 'USD' && global === 'ARS') {
     return valor * tasa;
+  }
+
+  // Si el activo es ARS y el usuario seleccionó ver en USD: división por la tasa
+  if (nativa === 'ARS' && global === 'USD') {
+    return valor / tasa;
   }
 
   return valor;
 }
 
+// Alias para compatibilidad hacia atrás
+export const convertirMonto = (valor, monedaNativa = 'USD', monedaGlobal = 'USD', tasaCambio = TASA_DEFAULT_USDT_ARS) => {
+  return convertirValorFX(valor, monedaNativa, monedaGlobal, tasaCambio);
+};
+
 /**
- * Función universal de formateo dinámico multidivisa.
- * @param {number} valor Monto original
- * @param {'ARS' | 'USD'} monedaNativa Moneda nativa del instrumento
- * @param {'ARS' | 'USD'} monedaGlobal Moneda visual seleccionada
- * @param {number} tasaCambio Tasa de paridad USDT/ARS
- * @param {Object} [opciones] Configuración adicional (mostrarSimbolo, mostrarCodigo)
- * @returns {string} Cadena formateada
+ * Formatea un valor monetario aplicando los separadores de miles estándar.
+ * Para ARS utiliza formato argentino (puntos para miles, comas para decimales).
+ * Para USD utiliza formato estándar americano (comas para miles, puntos para decimales).
+ * 
+ * @param {number} valor Monto numérico ya convertido a la moneda destino
+ * @param {'ARS' | 'USD'} moneda Moneda visual de la cifra
+ * @param {Object} [opciones]
+ * @returns {string} Cadena estilizada (ej: "$1.448.480 ARS" o "$2,450.50 USD")
+ */
+export function formatearMonto(valor, moneda = 'USD', opciones = {}) {
+  if (valor === undefined || valor === null || isNaN(Number(valor))) {
+    return '-';
+  }
+  const num = Number(valor);
+  const m = (moneda || 'USD').toUpperCase();
+  const { mostrarCodigo = false, compactar = false, decimales } = opciones;
+
+  let texto = '';
+  if (m === 'ARS') {
+    if (compactar && Math.abs(num) >= 1_000_000) {
+      texto = `$${(num / 1_000_000).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}M`;
+    } else {
+      const maxDec = decimales !== undefined ? decimales : (Math.abs(num) >= 100 ? 0 : 2);
+      texto = `$${num.toLocaleString('es-AR', { minimumFractionDigits: maxDec, maximumFractionDigits: maxDec })}`;
+    }
+  } else {
+    // Formato USD
+    if (compactar && Math.abs(num) >= 1_000_000) {
+      texto = `$${(num / 1_000_000).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}M`;
+    } else {
+      const maxDec = decimales !== undefined ? decimales : (Math.abs(num) >= 1 ? 2 : 4);
+      texto = `$${num.toLocaleString('en-US', { minimumFractionDigits: maxDec, maximumFractionDigits: maxDec })}`;
+    }
+  }
+
+  return mostrarCodigo ? `${texto} ${m}` : texto;
+}
+
+/**
+ * Función universal de formateo dinámico multidivisa con conversión automática.
  */
 export function formatearPrecio(valor, monedaNativa = 'USD', monedaGlobal = 'USD', tasaCambio = TASA_DEFAULT_USDT_ARS, opciones = {}) {
   if (valor === undefined || valor === null || isNaN(Number(valor))) {
     return '-';
   }
-
   const num = Number(valor);
   const global = (monedaGlobal || 'USD').toUpperCase();
-  const convertido = convertirMonto(num, monedaNativa, global, tasaCambio);
-  const { mostrarCodigo = false, compactar = false } = opciones;
-
-  let texto = '';
-  if (global === 'ARS') {
-    if (compactar && Math.abs(convertido) >= 1_000_000) {
-      texto = `$${(convertido / 1_000_000).toFixed(2)}M`;
-    } else if (Math.abs(convertido) >= 100) {
-      texto = `$${Math.round(convertido).toLocaleString('es-AR')}`;
-    } else {
-      texto = `$${convertido.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-    }
-  } else {
-    // Formato USD
-    if (compactar && Math.abs(convertido) >= 1_000_000) {
-      texto = `$${(convertido / 1_000_000).toFixed(2)}M`;
-    } else if (Math.abs(convertido) >= 1) {
-      texto = `$${convertido.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-    } else if (Math.abs(convertido) >= 0.0001) {
-      texto = `$${convertido.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`;
-    } else {
-      texto = `$${convertido.toFixed(6)}`;
-    }
-  }
-
-  return mostrarCodigo ? `${texto} ${global}` : texto;
+  const convertido = convertirValorFX(num, monedaNativa, global, tasaCambio);
+  return formatearMonto(convertido, global, opciones);
 }
 
 const CurrencyContext = createContext(null);
 
 export function CurrencyProvider({ children }) {
-  // Estado de moneda global persistente en localStorage
+  // Estado de moneda global persistente ('ARS' por defecto para el mercado argentino)
   const [monedaGlobal, setMonedaGlobalState] = useState(() => {
     try {
       const guardada = localStorage.getItem('condorfi_moneda_global');
@@ -109,6 +176,7 @@ export function CurrencyProvider({ children }) {
   const [cargandoTasa, setCargandoTasa] = useState(true);
   const [errorTasa, setErrorTasa] = useState(null);
   const [ultimaActualizacion, setUltimaActualizacion] = useState(null);
+  const [fuenteTasa, setFuenteTasa] = useState('DolarAPI');
 
   const setMonedaGlobal = useCallback((moneda) => {
     const m = moneda === 'USD' ? 'USD' : 'ARS';
@@ -123,36 +191,62 @@ export function CurrencyProvider({ children }) {
   }, [monedaGlobal, setMonedaGlobal]);
 
   /**
-   * Obtiene la tasa de cambio en tiempo real desde Binance USDT/ARS con fallback institucional
+   * Sincroniza la cotización del dólar en vivo desde DolarAPI (USDT/Cripto o Blue)
+   * eliminando cualquier dependencia de valores mock o estáticos.
    */
   const actualizarTasa = useCallback(async () => {
     setCargandoTasa(true);
     setErrorTasa(null);
 
-    // 1. Intento primario: Binance Public API (ticker USDTARS)
+    // 1. Intento primario: DolarAPI Dólar Cripto (USDT/ARS en vivo)
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 4000);
-      const res = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=USDTARS', {
+      const res = await fetch('https://dolarapi.com/v1/dolares/cripto', {
         signal: controller.signal
       });
       clearTimeout(timeoutId);
 
       if (res.ok) {
         const data = await res.json();
-        const price = parseFloat(data.price);
+        const price = parseFloat(data.venta || data.promedio || data.compra);
         if (!isNaN(price) && price > 0) {
           setTasaCambio(price);
+          setFuenteTasa('DolarAPI Cripto');
           setUltimaActualizacion(new Date());
           setCargandoTasa(false);
-          return;
+          return price;
         }
       }
     } catch (e) {
-      console.warn('[CurrencyContext] Binance API timeout/bloqueada, consultando fallback CriptoYa...', e.message);
+      console.warn('[CurrencyContext] DolarAPI Cripto falló, probando DolarAPI Blue...', e.message);
     }
 
-    // 2. Fallback secundario: CriptoYa Binance USDT/ARS
+    // 2. Fallback secundario: DolarAPI Dólar Blue
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 4000);
+      const res = await fetch('https://dolarapi.com/v1/dolares/blue', {
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+
+      if (res.ok) {
+        const data = await res.json();
+        const price = parseFloat(data.venta || data.promedio || data.compra);
+        if (!isNaN(price) && price > 0) {
+          setTasaCambio(price);
+          setFuenteTasa('DolarAPI Blue');
+          setUltimaActualizacion(new Date());
+          setCargandoTasa(false);
+          return price;
+        }
+      }
+    } catch (e) {
+      console.warn('[CurrencyContext] DolarAPI Blue falló, probando CriptoYa...', e.message);
+    }
+
+    // 3. Fallback terciario: CriptoYa Binance USDT/ARS
     try {
       const res = await fetch('https://criptoya.com/api/binance/usdt/ars');
       if (res.ok) {
@@ -160,32 +254,58 @@ export function CurrencyProvider({ children }) {
         const price = parseFloat(data.ask || data.bid || data.totalAsk);
         if (!isNaN(price) && price > 0) {
           setTasaCambio(price);
+          setFuenteTasa('CriptoYa');
           setUltimaActualizacion(new Date());
           setCargandoTasa(false);
-          return;
+          return price;
         }
       }
     } catch (e) {
-      console.warn('[CurrencyContext] Fallback CriptoYa falló, usando tasa de contingencia institucional:', e.message);
+      console.warn('[CurrencyContext] Fallback CriptoYa falló, probando Binance directo...', e.message);
     }
 
-    // 3. Fallback de contingencia garantizado
-    setTasaCambio(TASA_DEFAULT_USDT_ARS);
+    // 4. Fallback cuaternario: Binance Public API
+    try {
+      const res = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=USDTARS');
+      if (res.ok) {
+        const data = await res.json();
+        const price = parseFloat(data.price);
+        if (!isNaN(price) && price > 0) {
+          setTasaCambio(price);
+          setFuenteTasa('Binance');
+          setUltimaActualizacion(new Date());
+          setCargandoTasa(false);
+          return price;
+        }
+      }
+    } catch (e) {
+      console.warn('[CurrencyContext] Todas las fuentes remotas fallaron, manteniendo tasa previa:', e.message);
+    }
+
+    // Si fallan todas las APIs, mantener la última tasa conocida o contingencia
+    setTasaCambio(prev => prev > 0 ? prev : TASA_DEFAULT_USDT_ARS);
     setUltimaActualizacion(new Date());
     setCargandoTasa(false);
   }, []);
 
-  // Carga inicial al montar la aplicación
+  // Carga inicial y sondeo periódico cada 60 segundos
   useEffect(() => {
     actualizarTasa();
-    // Refresco periódico cada 60 segundos
     const intervalo = setInterval(actualizarTasa, 60000);
     return () => clearInterval(intervalo);
   }, [actualizarTasa]);
 
-  // Función formateadora memorizada y vinculada al estado global
+  // Funciones formateadoras memorizadas y vinculadas al estado global
   const formatPrecioBound = useCallback((valor, monedaNativa, opciones) => {
     return formatearPrecio(valor, monedaNativa, monedaGlobal, tasaCambio, opciones);
+  }, [monedaGlobal, tasaCambio]);
+
+  const formatMontoBound = useCallback((valorConvertido, opciones) => {
+    return formatearMonto(valorConvertido, monedaGlobal, opciones);
+  }, [monedaGlobal]);
+
+  const convertirMontoBound = useCallback((valor, monedaNativa) => {
+    return convertirValorFX(valor, monedaNativa, monedaGlobal, tasaCambio);
   }, [monedaGlobal, tasaCambio]);
 
   const value = useMemo(() => ({
@@ -195,11 +315,28 @@ export function CurrencyProvider({ children }) {
     tasaCambio,
     cargandoTasa,
     errorTasa,
+    fuenteTasa,
     ultimaActualizacion,
     actualizarTasa,
     formatearPrecio: formatPrecioBound,
-    convertirMonto: (v, nativa) => convertirMonto(v, nativa, monedaGlobal, tasaCambio)
-  }), [monedaGlobal, setMonedaGlobal, toggleMonedaGlobal, tasaCambio, cargandoTasa, errorTasa, ultimaActualizacion, actualizarTasa, formatPrecioBound]);
+    formatearMonto: formatMontoBound,
+    convertirMonto: convertirMontoBound,
+    convertirValorFX,
+    determinarMonedaNativa
+  }), [
+    monedaGlobal,
+    setMonedaGlobal,
+    toggleMonedaGlobal,
+    tasaCambio,
+    cargandoTasa,
+    errorTasa,
+    fuenteTasa,
+    ultimaActualizacion,
+    actualizarTasa,
+    formatPrecioBound,
+    formatMontoBound,
+    convertirMontoBound
+  ]);
 
   return (
     <CurrencyContext.Provider value={value}>
@@ -211,7 +348,6 @@ export function CurrencyProvider({ children }) {
 export function useCurrency() {
   const context = useContext(CurrencyContext);
   if (!context) {
-    // Retorno seguro con valores predeterminados para evitar rupturas fuera del Provider
     return {
       monedaGlobal: 'ARS',
       setMonedaGlobal: () => {},
@@ -219,12 +355,17 @@ export function useCurrency() {
       tasaCambio: TASA_DEFAULT_USDT_ARS,
       cargandoTasa: false,
       errorTasa: null,
+      fuenteTasa: 'Fallback',
       ultimaActualizacion: null,
       actualizarTasa: () => {},
       formatearPrecio: (v, nativa = 'USD', opts) => formatearPrecio(v, nativa, 'ARS', TASA_DEFAULT_USDT_ARS, opts),
-      convertirMonto: (v, nativa = 'USD') => convertirMonto(v, nativa, 'ARS', TASA_DEFAULT_USDT_ARS)
+      formatearMonto: (v, opts) => formatearMonto(v, 'ARS', opts),
+      convertirMonto: (v, nativa = 'USD') => convertirValorFX(v, nativa, 'ARS', TASA_DEFAULT_USDT_ARS),
+      convertirValorFX,
+      determinarMonedaNativa
     };
   }
   return context;
 }
 
+export default CurrencyContext;
