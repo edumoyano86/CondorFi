@@ -2,8 +2,8 @@ name: CondorFi MTFA Quantitative Scanner
 
 on:
   schedule:
-    # Se ejecuta automáticamente cada 15 minutos de forma gratuita en GitHub Actions
-    - cron: '*/15 * * * *'
+    # Se ejecuta cada 15 min de lunes a viernes, entre las 14:00 y 19:59 UTC (11:00 a 17:00 ART)
+    - cron: '*/15 14-19 * * 1-5'
   workflow_dispatch: # Permite dispararlo manualmente desde la pestaña "Actions" en GitHub
 
 jobs:
@@ -19,3 +19,4 @@ jobs:
             -H "User-Agent: CondorFi-GitHub-Cron/1.0" \
             --max-time 45 || echo "Aviso: No se pudo completar la invocación HTTP o la función tardó más del tiempo límite."
           echo "Ciclo de escaneo finalizado."
+
