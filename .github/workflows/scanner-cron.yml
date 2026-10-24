@@ -1,0 +1,21 @@
+name: CondorFi MTFA Quantitative Scanner
+
+on:
+  schedule:
+    # Se ejecuta automáticamente cada 15 minutos de forma gratuita en GitHub Actions
+    - cron: '*/15 * * * *'
+  workflow_dispatch: # Permite dispararlo manualmente desde la pestaña "Actions" en GitHub
+
+jobs:
+  escanear-mercado:
+    name: Disparar Escáner MTFA
+    runs-on: ubuntu-latest
+    steps:
+      - name: Invocar Motor Cuantitativo Serverless
+        run: |
+          echo "Disparando escaneo de activos en CondorFi cada 15 minutos..."
+          curl -s -f -X GET "https://condorfi.vercel.app/api/cron/scanner" \
+            -H "Content-Type: application/json" \
+            -H "User-Agent: CondorFi-GitHub-Cron/1.0" \
+            --max-time 45 || echo "Aviso: No se pudo completar la invocación HTTP o la función tardó más del tiempo límite."
+          echo "Ciclo de escaneo finalizado."
