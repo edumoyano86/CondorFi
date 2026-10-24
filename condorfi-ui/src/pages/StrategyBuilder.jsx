@@ -794,7 +794,7 @@ export default function StrategyBuilder() {
                 </span>
                 <div>
                   <h3 className="text-sm font-bold font-mono text-slate-900">
-                    Radar Sandbox: Prueba en Vivo sobre 41 Activos
+                    Radar Sandbox: Prueba en Vivo sobre {datosScreener.length} Activos
                   </h3>
                   <p className="text-[11px] text-slate-500 font-sans">
                     Evaluación instantánea de las reglas sobre las cotizaciones actuales de mercado.

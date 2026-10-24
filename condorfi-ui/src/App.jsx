@@ -20,15 +20,22 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import condorLogo from './assets/condorfi-logo.png';
 import { supabase } from './lib/supabase';
 import Layout from './layouts/Layout';
+import Home from './pages/Home';
 import Dashboard from './pages/Dashboard';
 import VistaMercado from './pages/VistaMercado';
+import Acciones from './pages/Acciones';
+import Indices from './pages/Indices';
+import Criptomonedas from './pages/Criptomonedas';
+import Bonos from './pages/Bonos';
 import Backtesting from './pages/Backtesting';
 import Portfolio from './pages/Portfolio';
 import StrategyBuilder from './pages/StrategyBuilder';
+import Login from './pages/Login';
 import Auth from './pages/Auth';
 import ProtectedRoute from './components/ProtectedRoute';
 import { CurrencyProvider } from './context/CurrencyContext';
 import { AuthProvider } from './context/AuthContext';
+import { generarScreenerInicialCompleto } from './lib/catalogoActivos';
 
 /**
  * Universo de 41 Activos Iniciales para el Screener (Fallback Instantáneo)
@@ -385,6 +392,76 @@ const DATOS_SCREENER_INICIAL = [
     macd: { macd: 0.05, signal: 0.02, histogram: 0.03, cruceAlcista: true, cruceBajista: false },
     bollinger: { sma: 78.20, upper: 79.50, lower: 76.90, bandwidth: 3.32, percentB: 0.77, tocaInferior: false, tocaSuperior: false },
     mensaje: 'Curva de bonos del Tesoro de EE.UU. rebotando ante expectativas de tasas de la Fed.'
+  },
+
+  // ETFS ESTRATÉGICOS & DIVIDENDOS
+  {
+    activo: 'SCHD',
+    nombre: 'Schwab U.S. Dividend Equity ETF',
+    mercado: 'NYSE Arca',
+    tipoMercado: 'tradfi',
+    subTipo: 'etfs_estrategicos',
+    moneda: 'USD',
+    precioActual: 28.52,
+    precioApertura: 28.38,
+    variacion24h: 0.49,
+    condorScore: 84,
+    dictamen: 'BUY',
+    rsi: 56.4,
+    macd: { macd: 0.22, signal: 0.14, histogram: 0.08, cruceAlcista: true, cruceBajista: false },
+    bollinger: { sma: 28.30, upper: 28.80, lower: 27.80, bandwidth: 3.53, percentB: 0.72, tocaInferior: false, tocaSuperior: false },
+    mensaje: 'Flujo institucional de cobertura de dividendos con bajo beta.'
+  },
+  {
+    activo: 'JEPI',
+    nombre: 'JPMorgan Equity Premium Income ETF',
+    mercado: 'NYSE Arca',
+    tipoMercado: 'tradfi',
+    subTipo: 'etfs_estrategicos',
+    moneda: 'USD',
+    precioActual: 58.25,
+    precioApertura: 58.10,
+    variacion24h: 0.26,
+    condorScore: 86,
+    dictamen: 'BUY',
+    rsi: 54.1,
+    macd: { macd: 0.35, signal: 0.28, histogram: 0.07, cruceAlcista: true, cruceBajista: false },
+    bollinger: { sma: 57.90, upper: 58.60, lower: 57.20, bandwidth: 2.41, percentB: 0.75, tocaInferior: false, tocaSuperior: false },
+    mensaje: 'Estrategia de covered calls con alta generación de rentabilidad por dividendo.'
+  },
+  {
+    activo: 'VIG',
+    nombre: 'Vanguard Dividend Appreciation ETF',
+    mercado: 'NYSE Arca',
+    tipoMercado: 'tradfi',
+    subTipo: 'etfs_estrategicos',
+    moneda: 'USD',
+    precioActual: 195.40,
+    precioApertura: 194.50,
+    variacion24h: 0.46,
+    condorScore: 82,
+    dictamen: 'BUY',
+    rsi: 58.2,
+    macd: { macd: 1.10, signal: 0.85, histogram: 0.25, cruceAlcista: true, cruceBajista: false },
+    bollinger: { sma: 194.00, upper: 197.00, lower: 191.00, bandwidth: 3.09, percentB: 0.73, tocaInferior: false, tocaSuperior: false },
+    mensaje: 'Aristócratas del dividendo en tendencia alcista sostenida.'
+  },
+  {
+    activo: 'QQQM',
+    nombre: 'Invesco NASDAQ 100 ETF (Low-Cost)',
+    mercado: 'NASDAQ',
+    tipoMercado: 'tradfi',
+    subTipo: 'etfs_estrategicos',
+    moneda: 'USD',
+    precioActual: 215.10,
+    precioApertura: 213.80,
+    variacion24h: 0.61,
+    condorScore: 88,
+    dictamen: 'STRONG_BUY',
+    rsi: 61.3,
+    macd: { macd: 2.30, signal: 1.80, histogram: 0.50, cruceAlcista: true, cruceBajista: false },
+    bollinger: { sma: 212.50, upper: 217.00, lower: 208.00, bandwidth: 4.23, percentB: 0.78, tocaInferior: false, tocaSuperior: false },
+    mensaje: 'Estructura réplica de QQQ con menor expense ratio para inversión sistemática.'
   }
 ];
 
@@ -429,7 +506,8 @@ export default function App() {
   const [registrosCompletos, setRegistrosCompletos] = useState([]);
   const [registrosTradfi, setRegistrosTradfi] = useState([]);
   const [alertas, setAlertas] = useState([]);
-  const [datosScreener, setDatosScreener] = useState(DATOS_SCREENER_INICIAL);
+  const [datosScreener, setDatosScreener] = useState(generarScreenerInicialCompleto);
+  const [isLoading, setIsLoading] = useState(false);
   const [ejecutandoInsight, setEjecutandoInsight] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [conectadoSupabase, setConectadoSupabase] = useState(false);
@@ -534,6 +612,7 @@ export default function App() {
 
   // Disparador del Screener Cuantitativo (/api/generar-insights)
   const ejecutarAnalisisScreener = useCallback(async () => {
+    setIsLoading(true);
     setEjecutandoInsight(true);
     try {
       const res = await fetch('/api/generar-insights?mercado=multimercado');
@@ -556,14 +635,16 @@ export default function App() {
     } catch (err) {
       console.warn('[Terminal] Error al consultar /api/generar-insights:', err);
     } finally {
+      // Desbloqueo garantizado de UI aunque el backend falle o arroje 429/500
+      setIsLoading(false);
       setEjecutandoInsight(false);
     }
   }, []);
 
   useEffect(() => {
     fetchCotizacionesReales();
-    ejecutarAnalisisScreener();
-  }, [fetchCotizacionesReales, ejecutarAnalisisScreener]);
+    // La sincronización de mercado masiva se realiza por demanda o por cada vista especializada
+  }, [fetchCotizacionesReales]);
 
   // Exportación nativa a CSV
   const descargarHistorialCSV = async () => {
@@ -643,6 +724,7 @@ export default function App() {
   // Contexto unificado que se propaga a todas las páginas vía Outlet context
   const outletContext = {
     datosScreener,
+    setDatosScreener,
     registrosTradfi,
     registrosCompletos,
     alertas,
@@ -651,6 +733,7 @@ export default function App() {
     estaActualizando,
     ultimaSincronizacion,
     ejecutandoInsight,
+    isLoading,
     isExporting,
     onEjecutarAnalisis: ejecutarAnalisisScreener,
     onExportarCSV: descargarHistorialCSV,
@@ -662,87 +745,58 @@ export default function App() {
       <CurrencyProvider>
         <BrowserRouter>
           <Routes>
-            {/* Pantalla de Autenticación Institucional Independiente */}
-            <Route path="/auth" element={<Auth />} />
-            <Route path="/login" element={<Auth />} />
+            {/* 1. Landing Page Comercial Pública (Ruta Raíz Independiente sin herramientas expuestas) */}
+            <Route path="/" element={<Home />} />
 
+            {/* 2. Pantalla de Autenticación Institucional Pública (Google OAuth + Email) */}
+            <Route path="/login" element={<Login />} />
+            <Route path="/auth" element={<Login />} />
+
+            {/* 3. Terminal Cuantitativa Privada (Muro de Registro: Redirige a /login si no hay sesión) */}
             <Route
-              path="/"
               element={
-                <Layout
-                  conectadoSupabase={conectadoSupabase}
-                  alertasHabilitadas={alertasHabilitadas}
-                  toggleAlertas={toggleAlertas}
-                  fetchCotizacionesReales={fetchCotizacionesReales}
-                  estaActualizando={estaActualizando}
-                  ultimaSincronizacion={ultimaSincronizacion}
-                  outletContext={outletContext}
-                />
+                <ProtectedRoute redirectTo="/login">
+                  <Layout
+                    conectadoSupabase={conectadoSupabase}
+                    alertasHabilitadas={alertasHabilitadas}
+                    toggleAlertas={toggleAlertas}
+                    fetchCotizacionesReales={fetchCotizacionesReales}
+                    estaActualizando={estaActualizando}
+                    ultimaSincronizacion={ultimaSincronizacion}
+                    outletContext={outletContext}
+                  />
+                </ProtectedRoute>
               }
             >
-              {/* 1. Dashboard (Resumen General - Público) */}
-              <Route index element={<Dashboard />} />
+              {/* Dashboard Gerencial & Radar Quant (Screener General) */}
+              <Route path="/dashboard" element={<Dashboard />} />
+              <Route path="/screener" element={<Dashboard />} />
 
-              {/* 2. Vistas Dedicadas de Mercado (Públicas) */}
-              <Route path="cripto" element={<VistaMercado categoria="cripto" />} />
-              <Route path="acciones" element={<VistaMercado categoria="acciones" />} />
-              <Route path="indices" element={<VistaMercado categoria="indices" />} />
-              <Route path="bonos" element={<VistaMercado categoria="bonos" />} />
+              {/* Vistas Operativas de Mercado */}
+              <Route path="/cripto" element={<Criptomonedas />} />
+              <Route path="/acciones" element={<Acciones />} />
+              <Route path="/indices" element={<Indices />} />
+              <Route path="/bonos" element={<Bonos />} />
 
-              {/* 3. Gestor de Portafolio Activo (Ruta Protegida Multi-Tenant) */}
-              <Route
-                path="portfolio"
-                element={
-                  <ProtectedRoute>
-                    <Portfolio />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="cartera"
-                element={
-                  <ProtectedRoute>
-                    <Portfolio />
-                  </ProtectedRoute>
-                }
-              />
+              {/* Gestor de Portafolio Activo Multi-Tenant */}
+              <Route path="/portfolio" element={<Portfolio />} />
+              <Route path="/cartera" element={<Portfolio />} />
 
-              {/* 4. Constructor Visual de Estrategias Quants (Ruta Protegida Multi-Tenant) */}
-              <Route
-                path="estrategias"
-                element={
-                  <ProtectedRoute>
-                    <StrategyBuilder />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="strategy-builder"
-                element={
-                  <ProtectedRoute>
-                    <StrategyBuilder />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="builder"
-                element={
-                  <ProtectedRoute>
-                    <StrategyBuilder />
-                  </ProtectedRoute>
-                }
-              />
+              {/* Constructor Visual de Estrategias Quants */}
+              <Route path="/estrategias" element={<StrategyBuilder />} />
+              <Route path="/strategy-builder" element={<StrategyBuilder />} />
+              <Route path="/builder" element={<StrategyBuilder />} />
 
-              {/* 5. Motor de Backtesting Institucional (Público / Lab) */}
-              <Route path="backtesting" element={<Backtesting />} />
-              <Route path="backtest" element={<Backtesting />} />
+              {/* Motor de Backtesting Institucional */}
+              <Route path="/backtesting" element={<Backtesting />} />
+              <Route path="/backtest" element={<Backtesting />} />
 
-              {/* 6. Ruta dinámica para cualquier otra categoría */}
-              <Route path=":categoria" element={<VistaMercado />} />
-
-              {/* 7. Fallback a la raíz */}
-              <Route path="*" element={<Navigate to="/" replace />} />
+              {/* Categorías dinámicas */}
+              <Route path="/:categoria" element={<VistaMercado />} />
             </Route>
+
+            {/* 4. Fallback a la Landing Page Comercial */}
+            <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>
       </CurrencyProvider>

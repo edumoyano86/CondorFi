@@ -46,41 +46,137 @@ const yf = typeof YahooFinance === 'function'
   : YahooFinance;
 
 export const TOP_CRIPTO = [
-  // Top 10 Core
+  // 1-10: Top 10 Core
   'USDT', 'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'AVAX', 'DOGE', 'LINK',
-  // Layer 1 & DeFi (11 - 20)
+  // 11-25: Layer 1, DeFi & Smart Contracts
   'DOT', 'MATIC', 'SHIB', 'LTC', 'UNI', 'ATOM', 'NEAR', 'ARB', 'OP', 'INJ',
-  // Expansión Institucional Top 30
-  'TON', 'TRX', 'BCH', 'ETC', 'FIL', 'LDO', 'APT', 'SUI', 'RNDR', 'XLM'
-];
-
-export const TRADFI_GLOBAL = [
-  // Benchmarks & ETFs
-  'SPY', 'QQQ', 'DIA', 'IWM',
-  // Mega-Cap Tech
-  'AAPL', 'MSFT', 'NVDA', 'TSLA', 'AMZN', 'META', 'GOOGL', 'AMD', 'NFLX',
-  // Pagos & Finanzas
-  'V', 'MA', 'JPM', 'BAC',
-  // Consumo Masivo & Retail
-  'KO', 'PEP', 'COST', 'WMT', 'DIS',
-  // Energía
-  'XOM', 'CVX',
-  // Salud & Farmacéuticas
-  'JNJ', 'UNH', 'LLY',
-  // Software Empresarial & Semiconductores
-  'ADBE', 'CRM', 'INTC', 'ORCL', 'CSCO'
+  'TON', 'TRX', 'BCH', 'ETC', 'FIL',
+  // 26-50: High-Cap & Emerging Titans
+  'LDO', 'APT', 'SUI', 'RNDR', 'XLM', 'HBAR', 'KAS', 'PEPE', 'FET', 'TAO',
+  'STX', 'AAVE', 'MKR', 'GRT', 'THETA', 'FTM', 'ALGO', 'FLOW', 'SAND', 'MANA',
+  'AXS', 'EGLD', 'EOS', 'CHZ', 'DYDX',
+  // 51-75: Memecoins, Layer 2 & DeFi Innovators
+  'WIF', 'BONK', 'FLOKI', 'TIA', 'SEI', 'JUP', 'PYTH', 'STRK', 'IMX', 'BEAM',
+  'CRV', 'SNX', 'COMP', '1INCH', 'PENDLE', 'ONDO', 'WLD', 'AGIX', 'OCEAN', 'GALA',
+  'ENS', 'BLUR', 'MINA', 'ROSE', 'CFX',
+  // 76-100: Established Alts, Cross-Chain & Gaming
+  'GNO', 'KAVA', 'QNT', 'NEO', 'IOTA', 'XTZ', 'ZEC', 'DASH', 'BSV', 'KLAY',
+  'RON', 'BERA', 'RAY', 'OSMO', 'KSM', 'APE', 'CHR', 'LRC', 'ENJ', 'BAT',
+  'ZIL', 'HOT', 'ANKR', 'ILV', 'SUPER'
 ];
 
 export const TRADFI_ARG_BONOS = [
-  // Índices & Acciones Líderes BYMA (Acciones Locales)
+  // Índices & Acciones Líderes BYMA (Mercado Argentino)
   '^MERV', 'GGAL.BA', 'YPFD.BA', 'PAMP.BA', 'BMA.BA', 'CEPU.BA', 'TXAR.BA', 'ALUA.BA',
-  // ADRs y CEDEARs de Alta Liquidez
-  'MELI', 'VIST', 'YPF',
-  // Renta Fija Soberana y Treasuries
-  'AL30.BA', 'GD30.BA', 'TLT'
+  'CRES.BA', 'EDN.BA', 'LOMA.BA', 'MIRG.BA', 'TECO2.BA', 'TGNO4.BA', 'TGSU2.BA', 'TRAN.BA', 'VALO.BA', 'BYMA.BA',
+  // CEDEARs & ADRs de Alta Liquidez
+  'MELI', 'VIST', 'YPF', 'GLOB', 'BBD', 'ITUB', 'VALE', 'PBR',
+  // Renta Fija Soberana y Cobertura (Ley Arg & NY + Treasuries)
+  'AL30.BA', 'GD30.BA', 'AL35.BA', 'GD35.BA', 'AE38.BA', 'GD38.BA', 'AL29.BA', 'GD29.BA', 'TLT'
 ];
 
-export const UNIVERSO_COMPLETO = [...TRADFI_GLOBAL, ...TRADFI_ARG_BONOS, ...TOP_CRIPTO];
+// 1. Catálogo Completo de Índices Financieros Globales (Exactamente 100 tickers explícitos)
+export const INDICES_GLOBALES = [
+  '^GSPC', 'SPY', 'IVV', 'VOO', 'VTI', '^NDX', 'QQQ', 'QQQM', '^DJI', 'DIA',
+  '^RUT', 'IWM', 'IWO', 'IWN', 'MDY', 'IJH', '^W5000', '^VIX', 'VXX', 'UVXY',
+  'XLK', 'VGT', 'XLF', 'VFH', 'XLE', 'VDE', 'XLV', 'VHT', 'XLI', 'VIS',
+  'XLY', 'VCR', 'XLP', 'VDC', 'XLU', 'VPU', 'XLB', 'VAW', 'XLRE', 'VNQ',
+  'XLC', 'VOX', 'SMH', 'SOXX', 'IBB', 'XBI', 'KRE', 'KBE', 'XHB', 'ITB',
+  'XRT', 'XME', 'GDX', 'GDXJ', 'XOP', 'OIH', 'TAN', 'ICLN', 'BOTZ', 'AIQ',
+  'HACK', 'CIBR', 'IGV', 'JETS', 'ARKK', '^MERV', 'ARGT', '^FTSE', 'EWU', '^GDAXI',
+  'EWG', '^FCHI', 'EWQ', '^N225', 'EWJ', '^HSI', 'FXI', 'MCHI', '^STOXX50E', 'FEZ',
+  '^IBEX', 'EWP', '^BVSP', 'EWZ', 'EEM', 'VWO', 'EFA', 'VEA', 'INDA', 'EPI',
+  'EWY', 'EWT', 'EWA', 'EWC', 'EWW', 'GLD', 'SLV', 'USO', 'DBC', 'BND'
+];
+
+export const TRADFI_INDICES_100 = INDICES_GLOBALES;
+
+// 2. Catálogo de ETFs Estratégicos (Exactamente 16 tickers explícitos)
+export const ETFS_ESTRATEGICOS = [
+  'VIG',
+  'SCHD',
+  'JEPI',
+  'JEPQ',
+  'VYM',
+  'DGRO',
+  'NOBL',
+  'QQQM',
+  'HDV',
+  'SPYD',
+  'DVY',
+  'SDY',
+  'COWZ',
+  'DIVO',
+  'MOAT',
+  'BST'
+];
+
+// 3. Catálogo Completo de Acciones Tech & Mega-Cap (Exactamente 100 tickers explícitos)
+export const ACCIONES_TECH = [
+  'AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'GOOG', 'META', 'TSLA', 'AVGO', 'NFLX',
+  'AMD', 'QCOM', 'TXN', 'INTC', 'AMAT', 'MU', 'LRCX', 'KLAC', 'MRVL', 'ADI',
+  'NXPI', 'MCHP', 'ON', 'ASML', 'ARM', 'TSM', 'MPWR', 'SWKS', 'QRVO', 'SMCI',
+  'ORCL', 'CRM', 'ADBE', 'NOW', 'INTU', 'SNOW', 'WDAY', 'PLTR', 'TEAM', 'DDOG',
+  'MDB', 'ZS', 'CRWD', 'PANW', 'FTNT', 'NET', 'OKTA', 'SPLK', 'ANSS', 'CDNS',
+  'IBM', 'CSCO', 'DELL', 'HPE', 'ANET', 'SNPS', 'VRSN', 'AKAM', 'NTAP', 'WDC',
+  'STX', 'CIEN', 'KEYS', 'FFIV', 'JNPR', 'UBER', 'ABNB', 'DASH', 'COIN', 'SHOP',
+  'MELI', 'SE', 'PYPL', 'SQ', 'HOOD', 'V', 'MA', 'AFRM', 'SOFI', 'ROKU',
+  'SPOT', 'PINS', 'SNAP', 'TTD', 'APP', 'ISRG', 'DXCM', 'ILMN', 'VRTX', 'REGN',
+  'BIIB', 'ALNY', 'CRSP', 'RIVN', 'LCID', 'TTWO', 'EA', 'RBLX', 'PATH', 'SYM'
+];
+
+export const TRADFI_GLOBAL = ACCIONES_TECH;
+
+export const UNIVERSO_COMPLETO = Array.from(new Set([
+  ...TRADFI_GLOBAL,
+  ...TRADFI_ARG_BONOS,
+  ...TRADFI_INDICES_100,
+  ...ETFS_ESTRATEGICOS,
+  ...TOP_CRIPTO
+]));
+
+/**
+ * Divide un array en lotes (chunks) de tamaño especificado.
+ */
+export function chunkArray(array, tamano = 15) {
+  const chunks = [];
+  for (let i = 0; i < array.length; i += tamano) {
+    chunks.push(array.slice(i, i + tamano));
+  }
+  return chunks;
+}
+
+/**
+ * Procesa un array de elementos en lotes con concurrencia controlada mediante Promise.allSettled
+ * y un retraso institucional de 1200ms entre lotes para evitar bloqueos por rate-limits (HTTP 429).
+ * Resiliencia total: Si un activo específico falla, se captura, se ignora y se continúa con el resto del lote,
+ * retornando únicamente los datos de las promesas en estado fulfilled.
+ */
+export async function procesarEnLotes(items, batchSize = 15, fnProcesamiento, delayMs = 1200) {
+  const lotes = chunkArray(items, batchSize);
+  const exitosos = [];
+
+  for (let i = 0; i < lotes.length; i++) {
+    const lote = lotes[i];
+    const promesasLote = lote.map(async (item) => {
+      return await fnProcesamiento(item);
+    });
+
+    const resultadosLote = await Promise.allSettled(promesasLote);
+
+    for (const res of resultadosLote) {
+      if (res.status === 'fulfilled' && res.value !== null && res.value !== undefined) {
+        exitosos.push(res.value);
+      }
+    }
+
+    if (i < lotes.length - 1 && delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
+  return exitosos;
+}
 
 // Catálogo de metadatos de referencia institucional
 export const ASSETS_METADATA = {
@@ -133,6 +229,24 @@ export const ASSETS_METADATA = {
   'AL30.BA': { nombre: 'Bono Bonar 2030 Ley Arg',      mercado: 'BYMA',      tipo: 'tradfi', baseMoneda: 'ARS' },
   'GD30.BA': { nombre: 'Bono Global 2030 Ley NY',      mercado: 'BYMA',      tipo: 'tradfi', baseMoneda: 'ARS' },
   TLT:       { nombre: 'iShares 20+ Year Treasury ETF', mercado: 'NASDAQ',    tipo: 'tradfi', baseMoneda: 'USD' },
+
+  // ETFs Estratégicos & Dividendos
+  VIG:       { nombre: 'Vanguard Dividend Appreciation ETF', mercado: 'NYSE Arca', tipo: 'tradfi', subTipo: 'etfs_estrategicos', baseMoneda: 'USD' },
+  SCHD:      { nombre: 'Schwab U.S. Dividend Equity ETF',    mercado: 'NYSE Arca', tipo: 'tradfi', subTipo: 'etfs_estrategicos', baseMoneda: 'USD' },
+  JEPI:      { nombre: 'JPMorgan Equity Premium Income ETF', mercado: 'NYSE Arca', tipo: 'tradfi', subTipo: 'etfs_estrategicos', baseMoneda: 'USD' },
+  JEPQ:      { nombre: 'JPMorgan Nasdaq Equity Premium ETF', mercado: 'NASDAQ',    tipo: 'tradfi', subTipo: 'etfs_estrategicos', baseMoneda: 'USD' },
+  VYM:       { nombre: 'Vanguard High Dividend Yield ETF',   mercado: 'NYSE Arca', tipo: 'tradfi', subTipo: 'etfs_estrategicos', baseMoneda: 'USD' },
+  DGRO:      { nombre: 'iShares Core Dividend Growth ETF',   mercado: 'NYSE Arca', tipo: 'tradfi', subTipo: 'etfs_estrategicos', baseMoneda: 'USD' },
+  NOBL:      { nombre: 'ProShares S&P 500 Div Aristocrats',  mercado: 'BATS',      tipo: 'tradfi', subTipo: 'etfs_estrategicos', baseMoneda: 'USD' },
+  QQQM:      { nombre: 'Invesco NASDAQ 100 ETF (Low-Cost)',  mercado: 'NASDAQ',    tipo: 'tradfi', subTipo: 'etfs_estrategicos', baseMoneda: 'USD' },
+  HDV:       { nombre: 'iShares Core High Dividend ETF',     mercado: 'NYSE Arca', tipo: 'tradfi', subTipo: 'etfs_estrategicos', baseMoneda: 'USD' },
+  SPYD:      { nombre: 'SPDR S&P Dividend ETF',              mercado: 'NYSE Arca', tipo: 'tradfi', subTipo: 'etfs_estrategicos', baseMoneda: 'USD' },
+  DVY:       { nombre: 'iShares Select Dividend ETF',        mercado: 'NASDAQ',    tipo: 'tradfi', subTipo: 'etfs_estrategicos', baseMoneda: 'USD' },
+  SDY:       { nombre: 'SPDR S&P Dividend ETF',              mercado: 'NYSE Arca', tipo: 'tradfi', subTipo: 'etfs_estrategicos', baseMoneda: 'USD' },
+  COWZ:      { nombre: 'Pacer US Cash Cows 100 ETF',         mercado: 'BATS',      tipo: 'tradfi', subTipo: 'etfs_estrategicos', baseMoneda: 'USD' },
+  DIVO:      { nombre: 'Amplify CWP Enhanced Dividend ETF',  mercado: 'NYSE Arca', tipo: 'tradfi', subTipo: 'etfs_estrategicos', baseMoneda: 'USD' },
+  MOAT:      { nombre: 'VanEck Morningstar Wide Moat ETF',   mercado: 'BATS',      tipo: 'tradfi', subTipo: 'etfs_estrategicos', baseMoneda: 'USD' },
+  BST:       { nombre: 'BlackRock Science and Tech Trust',   mercado: 'NYSE',      tipo: 'tradfi', subTipo: 'etfs_estrategicos', baseMoneda: 'USD' },
 
   // Top Criptoactivos (30 Tokens)
   USDT:    { nombre: 'Tether USD',                    mercado: 'Cripto ARS', tipo: 'cripto', baseMoneda: 'ARS' },
@@ -668,6 +782,7 @@ async function extraerSeriesMTFA(ticker, tipoMercado) {
 function extraerListaActivos(req, defaultMercado) {
   const query = req.query || {};
   const body = req.body || {};
+  const categoria = (query.categoria || query.category || body.categoria || '').toLowerCase().trim();
 
   let items = [];
 
@@ -682,10 +797,20 @@ function extraerListaActivos(req, defaultMercado) {
   if (query.ticker) items.push(String(query.ticker));
   if (query.moneda) items.push(String(query.moneda));
 
+  if (categoria) {
+    if (categoria.includes('etf') || categoria.includes('dividend')) return ETFS_ESTRATEGICOS;
+    if (categoria.includes('indice') || categoria.includes('índice') || categoria.includes('global')) return TRADFI_INDICES_100;
+    if (categoria.includes('accion') || categoria.includes('tech') || categoria.includes('lider')) return TRADFI_GLOBAL;
+    if (categoria.includes('bono') || categoria.includes('merval')) return TRADFI_ARG_BONOS;
+    if (categoria.includes('cripto')) return TOP_CRIPTO;
+  }
+
   items = items.map(s => s.trim().toUpperCase()).filter(Boolean);
 
   if (items.length === 0) {
-    if (defaultMercado === 'tradfi') return [...TRADFI_GLOBAL, ...TRADFI_ARG_BONOS];
+    if (defaultMercado === 'tradfi') return Array.from(new Set([...TRADFI_GLOBAL, ...TRADFI_ARG_BONOS, ...TRADFI_INDICES_100, ...ETFS_ESTRATEGICOS]));
+    if (defaultMercado === 'etfs') return ETFS_ESTRATEGICOS;
+    if (defaultMercado === 'indices') return TRADFI_INDICES_100;
     if (defaultMercado === 'cripto') return TOP_CRIPTO;
     return UNIVERSO_COMPLETO;
   }
@@ -700,7 +825,15 @@ function esActivoTradfi(activo, mercadoParam) {
   const a = (activo || '').toUpperCase();
   if (mercadoParam === 'tradfi') return true;
   if (mercadoParam === 'cripto') return false;
-  if (TRADFI_GLOBAL.includes(a) || TRADFI_ARG_BONOS.includes(a) || a.endsWith('.BA') || a === '^MERV') {
+  if (
+    TRADFI_GLOBAL.includes(a) ||
+    TRADFI_ARG_BONOS.includes(a) ||
+    TRADFI_INDICES_100.includes(a) ||
+    ETFS_ESTRATEGICOS.includes(a) ||
+    a.startsWith('^') ||
+    a.endsWith('.BA') ||
+    a === '^MERV'
+  ) {
     return true;
   }
   return ASSETS_METADATA[a]?.tipo === 'tradfi';
@@ -759,6 +892,7 @@ async function analizarActivoTradfi(db, ticker, limite = 100) {
       nombre: meta.nombre,
       mercado: meta.mercado,
       tipoMercado: 'tradfi',
+      subTipo: meta.subTipo || (ETFS_ESTRATEGICOS.includes(ticker) ? 'etfs_estrategicos' : 'acciones_tech'),
       moneda: meta.baseMoneda,
       precioActual,
       precioApertura,
@@ -837,6 +971,7 @@ async function analizarActivoTradfi(db, ticker, limite = 100) {
       nombre: meta.nombre,
       mercado: meta.mercado,
       tipoMercado: 'tradfi',
+      subTipo: meta.subTipo || (ETFS_ESTRATEGICOS.includes(ticker) ? 'etfs_estrategicos' : 'acciones_tech'),
       moneda: meta.baseMoneda,
       precioActual: null,
       precioApertura: null,
@@ -1393,25 +1528,23 @@ export default async function handler(req, res) {
       }
     }
 
-    // 3. Procesamiento concurrente masivo de cada activo con Promise.allSettled
-    const promesasAnalisis = listaActivos.map(async (activo) => {
+    // 3. Procesamiento en lotes concurrentes (Batching de 15 activos con 200ms de delay)
+    const BATCH_SIZE = 15;
+    const exitosos = await procesarEnLotes(listaActivos, BATCH_SIZE, async (activo) => {
       const esTradfi = esActivoTradfi(activo, mercadoParam);
       if (esTradfi) {
         return await analizarActivoTradfi(db, activo, limiteMuestras);
       } else {
         return await analizarActivoCripto(db, activo, limiteMuestras);
       }
-    });
-
-    const resultadosSettled = await Promise.allSettled(promesasAnalisis);
+    }, 1200);
 
     const screenerResults = [];
     const alertasParaGuardar = [];
 
-    resultadosSettled.forEach((item, idx) => {
-      const activo = listaActivos[idx];
-      if (item.status === 'fulfilled' && item.value) {
-        let resultado = item.value;
+    exitosos.forEach((resultado) => {
+      if (resultado && resultado.activo) {
+        const activo = resultado.activo;
 
         // Evaluación dinámica si hay una estrategia personalizada activa
         if (estrategiaActiva && resultado.status === 'CALCULATED') {
@@ -1466,33 +1599,35 @@ export default async function handler(req, res) {
             timestamp: new Date().toISOString()
           });
         }
-      } else {
-        const errorMsg = item.reason?.message || String(item.reason || 'Error no controlado');
-        console.error('Fallo en activo motor quant:', activo, 'Motivo:', errorMsg);
-        const meta = ASSETS_METADATA[activo] || { nombre: activo, mercado: 'Multimercado', tipo: 'desconocido', baseMoneda: 'USD' };
-        screenerResults.push({
-          activo,
-          nombre: meta.nombre,
-          mercado: meta.mercado,
-          tipoMercado: meta.tipo,
-          moneda: meta.baseMoneda,
-          precioActual: null,
-          precioApertura: null,
-          variacion24h: 0,
-          condorScore: null,
-          dictamen: 'INSUFFICIENT_DATA',
-          alineacion_temporal: 'NEUTRAL',
-          mtfa: null,
-          status: 'INSUFFICIENT_DATA',
-          rsi: null,
-          macd: null,
-          bollinger: null,
-          esVolatilidadExtrema: false,
-          mensaje: `Error en análisis del activo (${errorMsg}). Esperando sincronización.`,
-          totalMuestras: 0,
-          timestamp: new Date().toISOString()
-        });
       }
+    });
+
+    const procesadosSet = new Set(exitosos.map(e => e.activo));
+    const noProcesados = listaActivos.filter(a => !procesadosSet.has(a));
+    noProcesados.forEach(activo => {
+      const meta = ASSETS_METADATA[activo] || { nombre: activo, mercado: 'Multimercado', tipo: 'desconocido', baseMoneda: 'USD' };
+      screenerResults.push({
+        activo,
+        nombre: meta.nombre,
+        mercado: meta.mercado,
+        tipoMercado: meta.tipo,
+        moneda: meta.baseMoneda,
+        precioActual: null,
+        precioApertura: null,
+        variacion24h: 0,
+        condorScore: null,
+        dictamen: 'INSUFFICIENT_DATA',
+        alineacion_temporal: 'NEUTRAL',
+        mtfa: null,
+        status: 'INSUFFICIENT_DATA',
+        rsi: null,
+        macd: null,
+        bollinger: null,
+        esVolatilidadExtrema: false,
+        mensaje: 'Sin datos disponibles temporalmente.',
+        totalMuestras: 0,
+        timestamp: new Date().toISOString()
+      });
     });
 
     // 4. Inserción en lote de alertas institucionales en 'alertas_mercado'

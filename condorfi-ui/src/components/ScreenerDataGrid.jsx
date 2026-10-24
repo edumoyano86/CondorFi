@@ -31,9 +31,15 @@ import {
   ChevronRight
 } from 'lucide-react';
 
+import { INDICES_GLOBALES, BONOS_TICKERS as BONOS_CATALOGO } from '../lib/catalogoActivos';
+
 // Constantes de clasificación según el universo de CondorFi
-export const INDICES_TICKERS = ['^MERV', 'SPY', 'QQQ', 'DIA', 'IWM'];
-export const BONOS_TICKERS = ['AL30.BA', 'GD30.BA', 'TLT'];
+export const INDICES_TICKERS = INDICES_GLOBALES;
+
+export const BONOS_TICKERS = BONOS_CATALOGO || [
+  'AL30.BA', 'GD30.BA', 'AL35.BA', 'GD35.BA', 'AE38.BA', 'GD38.BA', 'AL29.BA', 'GD29.BA',
+  'TLT', 'IEF', 'SHY', 'BND', 'AGG', 'LQD', 'HYG'
+];
 
 /**
  * Función auxiliar de clasificación institucional.
@@ -46,23 +52,43 @@ export const BONOS_TICKERS = ['AL30.BA', 'GD30.BA', 'TLT'];
 export function clasificarActivo(item) {
   if (!item) return 'Acciones';
   const ticker = (item.activo || item.ticker || '').toUpperCase();
+  const subTipo = (item.subTipo || '').toLowerCase();
+  const mercado = (item.mercado || '').toLowerCase();
+  const tipoMercado = (item.tipoMercado || '').toLowerCase();
 
-  // 1. Criptomonedas: Si su mercado o tipoMercado es cripto
+  // 0. Prioridad a subTipo institucional si viene especificado
+  if (subTipo === 'indices_globales') return 'Índices';
+  if (subTipo === 'acciones_tech' || subTipo === 'etfs_estrategicos') return 'Acciones';
+  if (subTipo === 'bonos') return 'Bonos';
+
+  // 1. Bonos: Soberanos argentinos y Renta Fija US / Global
   if (
-    item.tipoMercado === 'cripto' ||
-    (item.mercado && item.mercado.toLowerCase().includes('cripto'))
+    (BONOS_TICKERS.includes(ticker) && ticker !== 'BND') ||
+    mercado.includes('bono') ||
+    tipoMercado.includes('bono')
   ) {
-    return 'Criptomonedas';
+    return 'Bonos';
   }
 
-  // 2. Índices: Benchmarks globales y Merval
-  if (INDICES_TICKERS.includes(ticker)) {
+  // 2. Índices: Benchmarks globales, Merval, VIX o tickers que inicien con '^'
+  if (
+    INDICES_TICKERS.includes(ticker) ||
+    ticker.startsWith('^') ||
+    mercado.includes('indice') ||
+    mercado.includes('índice') ||
+    tipoMercado.includes('indice') ||
+    tipoMercado.includes('índice')
+  ) {
     return 'Índices';
   }
 
-  // 3. Bonos: Soberanos argentinos y Renta Fija US
-  if (BONOS_TICKERS.includes(ticker)) {
-    return 'Bonos';
+  // 3. Criptomonedas: Si su mercado o tipoMercado es cripto
+  if (
+    tipoMercado === 'cripto' ||
+    mercado.includes('cripto') ||
+    (item.moneda === 'ARS' && !ticker.endsWith('.BA') && !ticker.startsWith('^'))
+  ) {
+    return 'Criptomonedas';
   }
 
   // 4. Acciones: Cualquier activo TradFi restante (tech, NYSE, NASDAQ, BYMA)
@@ -86,14 +112,40 @@ export const normalizarCategoria = (cat) => {
   return cat;
 };
 
+/**
+ * Genera el array de páginas visibles con elipsis para evitar desbordes horizontales
+ * al gestionar cientos de activos.
+ */
+function obtenerPaginasVisibles(actual, total) {
+  if (total <= 7) {
+    return Array.from({ length: total }, (_, i) => i + 1);
+  }
+  const paginas = [1];
+  if (actual > 3) {
+    paginas.push('...');
+  }
+  const inicio = Math.max(2, actual - 1);
+  const fin = Math.min(total - 1, actual + 1);
+  for (let i = inicio; i <= fin; i++) {
+    paginas.push(i);
+  }
+  if (actual < total - 2) {
+    paginas.push('...');
+  }
+  paginas.push(total);
+  return paginas;
+}
+
 export default function ScreenerDataGrid({
   datosScreener = [],
   ejecutandoInsight = false,
+  isLoading = false,
   onEjecutarAnalisis,
   onExportarCSV,
   isExporting = false,
   filtroCategoria = null
 }) {
+  const estaCargando = Boolean(ejecutandoInsight || isLoading);
   const categoriaNormalizada = useMemo(() => normalizarCategoria(filtroCategoria), [filtroCategoria]);
   // Consumo del Motor Multidivisa Global (ARS / USD)
   const { monedaGlobal, tasaCambio, formatearPrecio: formatPrecioCurrency } = useCurrency();
@@ -105,7 +157,7 @@ export default function ScreenerDataGrid({
   const [busqueda, setBusqueda] = useState('');
   const [filaExpandida, setFilaExpandida] = useState(null);
   const [paginaActual, setPaginaActual] = useState(1);
-  const [filasPorPagina, setFilasPorPagina] = useState(20); // 10 | 20 | 'todos'
+  const [filasPorPagina, setFilasPorPagina] = useState(50); // 15 | 25 | 50 (Máximo 50 filas para garantizar 60 FPS)
 
   useEffect(() => {
     if (categoriaNormalizada) {
@@ -187,17 +239,15 @@ export default function ScreenerDataGrid({
     return lista;
   }, [datosCategoriaActiva, busqueda, columnaOrden, direccionOrden]);
 
-  // Cálculos de paginación para la vista activa
+  // Cálculos de paginación para la vista activa (Máximo estricto de 50 filas por página para DOM ligero a 60 FPS)
   const totalFilas = datosProcesados.length;
-  const esModoTodos = filasPorPagina === 'todos';
-  const totalPaginas = esModoTodos ? 1 : Math.max(1, Math.ceil(totalFilas / (Number(filasPorPagina) || 20)));
+  const filasEfectivas = Math.min(Number(filasPorPagina) || 50, 50);
+  const totalPaginas = Math.max(1, Math.ceil(totalFilas / filasEfectivas));
 
   const datosPaginados = useMemo(() => {
-    if (esModoTodos) return datosProcesados;
-    const porPag = Number(filasPorPagina) || 20;
-    const inicio = (paginaActual - 1) * porPag;
-    return datosProcesados.slice(inicio, inicio + porPag);
-  }, [datosProcesados, paginaActual, filasPorPagina, esModoTodos]);
+    const inicio = (paginaActual - 1) * filasEfectivas;
+    return datosProcesados.slice(inicio, inicio + filasEfectivas);
+  }, [datosProcesados, paginaActual, filasEfectivas]);
 
   // Manejador del ordenamiento al hacer clic en las cabeceras
   const manejarOrden = (columna) => {
@@ -349,12 +399,12 @@ export default function ScreenerDataGrid({
           {onEjecutarAnalisis && (
             <button
               onClick={onEjecutarAnalisis}
-              disabled={ejecutandoInsight}
+              disabled={estaCargando}
               className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-orange-600 hover:bg-orange-700 text-white transition active:scale-95 shadow-xs disabled:opacity-50 cursor-pointer"
               title="Ejecutar motor cuantitativo en paralelo sobre todos los activos"
             >
-              <Zap className={`w-3.5 h-3.5 ${ejecutandoInsight ? 'animate-spin' : ''}`} />
-              <span>{ejecutandoInsight ? 'Calculando Modelos...' : 'Escanear Todo el Mercado'}</span>
+              <Zap className={`w-3.5 h-3.5 ${estaCargando ? 'animate-spin' : ''}`} />
+              <span>{estaCargando ? 'Calculando Modelos...' : 'Escanear Todo el Mercado'}</span>
             </button>
           )}
         </div>
@@ -509,6 +559,7 @@ export default function ScreenerDataGrid({
                   <React.Fragment key={item.activo}>
                     <tr
                       onClick={() => setFilaExpandida(esFilaAbierta ? null : item.activo)}
+                      style={{ contentVisibility: 'auto' }}
                       className={`hover:bg-orange-50/20 transition cursor-pointer ${
                         item.dictamen === 'STRONG_BUY' ? 'bg-emerald-50/10' : ''
                       }`}
@@ -777,11 +828,11 @@ export default function ScreenerDataGrid({
                     {onEjecutarAnalisis && (
                       <button
                         onClick={onEjecutarAnalisis}
-                        disabled={ejecutandoInsight}
-                        className="mt-2 flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-orange-600 hover:bg-orange-700 text-white transition active:scale-95 shadow-xs cursor-pointer"
+                        disabled={estaCargando}
+                        className="mt-2 flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-orange-600 hover:bg-orange-700 text-white transition active:scale-95 shadow-xs cursor-pointer disabled:opacity-50"
                       >
-                        <Zap className={`w-3.5 h-3.5 ${ejecutandoInsight ? 'animate-spin' : ''}`} />
-                        <span>{ejecutandoInsight ? 'Sincronizando...' : 'Escanear Mercado Ahora'}</span>
+                        <Zap className={`w-3.5 h-3.5 ${estaCargando ? 'animate-spin' : ''}`} />
+                        <span>{estaCargando ? 'Sincronizando...' : 'Escanear Mercado Ahora'}</span>
                       </button>
                     )}
                   </div>
@@ -819,17 +870,17 @@ export default function ScreenerDataGrid({
           <span>
             Mostrando{' '}
             <strong className="text-gray-800">
-              {totalFilas === 0 ? 0 : (paginaActual - 1) * (esModoTodos ? totalFilas : Number(filasPorPagina)) + 1}
+              {totalFilas === 0 ? 0 : (paginaActual - 1) * filasEfectivas + 1}
               {' - '}
-              {esModoTodos ? totalFilas : Math.min(paginaActual * Number(filasPorPagina), totalFilas)}
+              {Math.min(paginaActual * filasEfectivas, totalFilas)}
             </strong>{' '}
             de <strong className="text-gray-800">{totalFilas}</strong> activos en{' '}
             <span className="text-orange-700 font-bold">{tabActivo}</span>
           </span>
           <span className="text-gray-300">•</span>
-          <span>Filas por página:</span>
+          <span>Filas por página (máx 50):</span>
           <div className="flex items-center gap-1 bg-gray-200/80 p-0.5 rounded-lg border border-gray-300/80">
-            {[10, 20, 'todos'].map(opcion => (
+            {[15, 25, 50].map(opcion => (
               <button
                 key={opcion}
                 onClick={() => {
@@ -842,14 +893,14 @@ export default function ScreenerDataGrid({
                     : 'text-gray-600 hover:text-gray-900'
                 }`}
               >
-                {opcion === 'todos' ? 'Todos' : opcion}
+                {opcion}
               </button>
             ))}
           </div>
         </div>
 
         {/* Controles de paginación interactiva cuando hay más de una página */}
-        {!esModoTodos && totalPaginas > 1 && (
+        {totalPaginas > 1 && (
           <div className="flex items-center gap-1.5 self-end sm:self-auto">
             <button
               onClick={() => setPaginaActual(prev => Math.max(1, prev - 1))}
@@ -861,19 +912,29 @@ export default function ScreenerDataGrid({
             </button>
 
             <div className="flex items-center gap-1">
-              {Array.from({ length: totalPaginas }, (_, i) => i + 1).map(num => (
-                <button
-                  key={num}
-                  onClick={() => setPaginaActual(num)}
-                  className={`w-7 h-7 rounded-lg text-xs font-bold transition cursor-pointer flex items-center justify-center ${
-                    paginaActual === num
-                      ? 'bg-orange-600 text-white shadow-2xs'
-                      : 'bg-white border border-gray-200 text-gray-700 hover:bg-gray-100'
-                  }`}
-                >
-                  {num}
-                </button>
-              ))}
+              {obtenerPaginasVisibles(paginaActual, totalPaginas).map((item, idx) => {
+                if (item === '...') {
+                  return (
+                    <span key={`dots-${idx}`} className="px-1 text-gray-400 font-bold select-none">
+                      …
+                    </span>
+                  );
+                }
+                const num = item;
+                return (
+                  <button
+                    key={num}
+                    onClick={() => setPaginaActual(num)}
+                    className={`w-7 h-7 rounded-lg text-xs font-bold transition cursor-pointer flex items-center justify-center ${
+                      paginaActual === num
+                        ? 'bg-orange-600 text-white shadow-2xs'
+                        : 'bg-white border border-gray-200 text-gray-700 hover:bg-gray-100'
+                    }`}
+                  >
+                    {num}
+                  </button>
+                );
+              })}
             </div>
 
             <button

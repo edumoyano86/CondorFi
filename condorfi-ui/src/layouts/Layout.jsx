@@ -12,13 +12,15 @@
  * ==============================================================================
  */
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { NavLink, Outlet, useLocation, Link } from 'react-router-dom';
 import condorLogo from '../assets/condorfi-logo.png';
 import { useCurrency } from '../context/CurrencyContext';
 import { useAuth } from '../context/AuthContext';
+import { clasificarActivo } from '../components/ScreenerDataGrid';
 import {
   LayoutDashboard,
+  Home as HomeIcon,
   Coins,
   Building2,
   BarChart3,
@@ -43,11 +45,18 @@ import {
 export const RUTAS_NAVEGACION = [
   {
     path: '/',
-    label: 'Dashboard',
-    subLabel: 'Resumen General',
-    icon: LayoutDashboard,
-    badge: 'Quant',
+    label: 'Inicio',
+    subLabel: 'Portal Comercial',
+    icon: HomeIcon,
+    badge: 'SaaS',
     exact: true
+  },
+  {
+    path: '/dashboard',
+    label: 'Dashboard',
+    subLabel: 'Screener General',
+    icon: LayoutDashboard,
+    badge: '300+'
   },
   {
     path: '/portfolio',
@@ -68,28 +77,28 @@ export const RUTAS_NAVEGACION = [
     label: 'Criptomonedas',
     subLabel: 'Spreads & Paridades',
     icon: Coins,
-    badge: '20'
+    badge: '100'
   },
   {
     path: '/acciones',
-    label: 'Acciones',
-    subLabel: 'Wall Street & BYMA',
+    label: 'Acciones & ETFs',
+    subLabel: 'Wall Street & Dividendos',
     icon: Building2,
-    badge: '13'
+    badge: '100+'
   },
   {
     path: '/indices',
     label: 'Índices',
     subLabel: 'Benchmarks Globales',
     icon: BarChart3,
-    badge: '5'
+    badge: '100'
   },
   {
     path: '/bonos',
     label: 'Bonos',
     subLabel: 'Renta Fija Soberana',
     icon: Landmark,
-    badge: '3'
+    badge: '10+'
   },
   {
     path: '/backtest',
@@ -113,42 +122,63 @@ export default function Layout({
   const { monedaGlobal, setMonedaGlobal, tasaCambio } = useCurrency();
   const { user, signOut, isAuthenticated } = useAuth();
 
+  // Conteo dinámico sincronizado en tiempo real sobre los activos del screener
+  const datosScreener = outletContext.datosScreener || [];
+  const conteos = useMemo(() => {
+    const c = { total: datosScreener.length, cripto: 0, acciones: 0, indices: 0, bonos: 0 };
+    datosScreener.forEach(item => {
+      const cat = clasificarActivo(item);
+      if (cat === 'Criptomonedas') c.cripto++;
+      else if (cat === 'Acciones') c.acciones++;
+      else if (cat === 'Índices') c.indices++;
+      else if (cat === 'Bonos') c.bonos++;
+    });
+    return c;
+  }, [datosScreener]);
+
   // Título dinámico para el Header según la ruta actual
   const obtenerTituloRuta = () => {
     const ruta = location.pathname;
     if (ruta === '/' || ruta === '') {
       return {
-        titulo: 'Dashboard Gerencial & Radar Quant',
-        subtitulo: 'Monitoreo consolidado de 41 activos y modelos estadísticos en tiempo real',
+        titulo: 'CondorFi Terminal Cuantitativa',
+        subtitulo: 'Portal Institucional, MTFA y Suite Algorítmica Multi-Mercado',
         badge: 'Institucional'
+      };
+    }
+    if (ruta.startsWith('/dashboard') || ruta.startsWith('/screener')) {
+      return {
+        titulo: 'Dashboard Gerencial & Radar Quant',
+        subtitulo: `Monitoreo consolidado de ${conteos.total > 0 ? conteos.total : '300+'} activos y modelos estadísticos en tiempo real`,
+        badge: `${conteos.total > 0 ? conteos.total : '300+'} Activos`
       };
     }
     if (ruta.startsWith('/cripto')) {
       return {
-        titulo: 'Mercado de Criptomonedas (20 Activos)',
+        titulo: `Mercado de Criptomonedas (${conteos.cripto > 0 ? conteos.cripto : '100'} Activos)`,
         subtitulo: 'Cotizaciones en vivo en pesos argentinos, arbitraje multi-exchange y momentum',
-        badge: '20 Criptoactivos'
+        badge: `${conteos.cripto > 0 ? conteos.cripto : '100'} Criptoactivos`
       };
     }
     if (ruta.startsWith('/acciones')) {
       return {
-        titulo: 'Renta Variable: Acciones Tech & Locales (13 Activos)',
-        subtitulo: 'Big Tech NASDAQ (AAPL, MSFT, NVDA...) y líderes BYMA (GGAL, YPFD, PAMP)',
-        badge: '13 Acciones'
+        titulo: `Renta Variable: Acciones Líderes & ETFs (${conteos.acciones > 0 ? conteos.acciones : '100+'} Activos)`,
+        subtitulo: 'Mega-Cap NASDAQ, S&P 500, ETFs de Dividendos (SCHD, JEPI, VIG) y líderes BYMA',
+        badge: `${conteos.acciones > 0 ? conteos.acciones : '100+'} Acciones`
       };
     }
     if (ruta.startsWith('/indices')) {
       return {
-        titulo: 'Índices Financieros Globales (5 Benchmarks)',
-        subtitulo: 'S&P 500, Nasdaq 100, Dow Jones Industrial, Russell 2000 y S&P Merval',
-        badge: '5 Índices'
+        titulo: `Índices Financieros Globales (${conteos.indices > 0 ? conteos.indices : '100'} Benchmarks)`,
+        subtitulo: 'S&P 500, Nasdaq 100, Dow Jones Industrial, Russell 2000, DAX, Nikkei y S&P Merval',
+        badge: `${conteos.indices > 0 ? conteos.indices : '100'} Índices`
       };
     }
     if (ruta.startsWith('/bonos')) {
       return {
-        titulo: 'Renta Fija: Bonos Soberanos & Treasuries (3 Activos)',
+        titulo: `Renta Fija: Bonos Soberanos & Treasuries (${conteos.bonos > 0 ? conteos.bonos : '10+'} Activos)`,
         subtitulo: 'Bonar 2030 (AL30.BA), Global 2030 (GD30.BA) y Treasuries Americanos (TLT)',
-        badge: '3 Bonos'
+        badge: `${conteos.bonos > 0 ? conteos.bonos : '10+'} Bonos`
       };
     }
     if (ruta.startsWith('/portfolio') || ruta.startsWith('/cartera')) {
@@ -220,6 +250,13 @@ export default function Layout({
             </p>
             {RUTAS_NAVEGACION.map(ruta => {
               const Icon = ruta.icon;
+              let badgeDinamico = ruta.badge;
+              if (ruta.path === '/dashboard') badgeDinamico = conteos.total > 0 ? String(conteos.total) : '300+';
+              else if (ruta.path === '/cripto') badgeDinamico = conteos.cripto > 0 ? String(conteos.cripto) : '100';
+              else if (ruta.path === '/acciones') badgeDinamico = conteos.acciones > 0 ? String(conteos.acciones) : '100+';
+              else if (ruta.path === '/indices') badgeDinamico = conteos.indices > 0 ? String(conteos.indices) : '100';
+              else if (ruta.path === '/bonos') badgeDinamico = conteos.bonos > 0 ? String(conteos.bonos) : '10+';
+
               return (
                 <NavLink
                   key={ruta.path}
@@ -242,9 +279,9 @@ export default function Layout({
                       </span>
                     </div>
                   </div>
-                  {ruta.badge && (
+                  {badgeDinamico && (
                     <span className="text-[10px] font-mono px-2 py-0.5 rounded-full border border-slate-700/60 bg-slate-900/80 text-slate-300">
-                      {ruta.badge}
+                      {badgeDinamico}
                     </span>
                   )}
                 </NavLink>

@@ -14,6 +14,7 @@
 
 import React, { useMemo } from 'react';
 import { useOutletContext, Link } from 'react-router-dom';
+import { clasificarActivo } from '../components/ScreenerDataGrid';
 import {
   Sparkles,
   TrendingUp,
@@ -47,8 +48,11 @@ export default function Dashboard() {
     datosScreener = [],
     alertas = [],
     onEjecutarAnalisis,
-    ejecutandoInsight = false
+    ejecutandoInsight = false,
+    isLoading = false
   } = context;
+
+  const estaCargando = Boolean(ejecutandoInsight || isLoading);
 
   // 1. Activo con mejor CondorScore del día
   const mejorActivo = useMemo(() => {
@@ -108,7 +112,19 @@ export default function Dashboard() {
       }));
   }, [datosScreener]);
 
-  // 4. Métricas agrupadas por categoría para accesos directos
+  // 4. Métricas dinámicas agrupadas por categoría calculadas sobre datosScreener
+  const conteosPorCategoria = useMemo(() => {
+    const counts = { cripto: 0, acciones: 0, indices: 0, bonos: 0 };
+    datosScreener.forEach(item => {
+      const cat = clasificarActivo(item);
+      if (cat === 'Criptomonedas') counts.cripto++;
+      else if (cat === 'Acciones') counts.acciones++;
+      else if (cat === 'Índices') counts.indices++;
+      else if (cat === 'Bonos') counts.bonos++;
+    });
+    return counts;
+  }, [datosScreener]);
+
   const resumenCategorias = useMemo(() => {
     return [
       {
@@ -117,18 +133,18 @@ export default function Dashboard() {
         subtitulo: 'USDT, BTC, ETH, SOL...',
         path: '/cripto',
         icono: Coins,
-        cantidad: 20,
+        cantidad: conteosPorCategoria.cripto,
         colorBadge: 'bg-orange-100 text-orange-800 border-orange-200',
         iconoColor: 'text-orange-600',
         bgHover: 'hover:border-orange-300'
       },
       {
         id: 'acciones',
-        titulo: 'Acciones',
-        subtitulo: 'Wall Street & Merval BYMA',
+        titulo: 'Acciones & ETFs',
+        subtitulo: 'Wall Street, ETFs Dividendos & BYMA',
         path: '/acciones',
         icono: Building2,
-        cantidad: 13,
+        cantidad: conteosPorCategoria.acciones,
         colorBadge: 'bg-blue-100 text-blue-800 border-blue-200',
         iconoColor: 'text-blue-600',
         bgHover: 'hover:border-blue-300'
@@ -139,7 +155,7 @@ export default function Dashboard() {
         subtitulo: 'S&P 500, QQQ, Dow, Merval',
         path: '/indices',
         icono: BarChart3,
-        cantidad: 5,
+        cantidad: conteosPorCategoria.indices,
         colorBadge: 'bg-emerald-100 text-emerald-800 border-emerald-200',
         iconoColor: 'text-emerald-600',
         bgHover: 'hover:border-emerald-300'
@@ -150,13 +166,13 @@ export default function Dashboard() {
         subtitulo: 'Bonar 2030, Global 2030, TLT',
         path: '/bonos',
         icono: Landmark,
-        cantidad: 3,
+        cantidad: conteosPorCategoria.bonos,
         colorBadge: 'bg-purple-100 text-purple-800 border-purple-200',
         iconoColor: 'text-purple-600',
         bgHover: 'hover:border-purple-300'
       }
     ];
-  }, []);
+  }, [conteosPorCategoria]);
 
   return (
     <div className="space-y-6">
@@ -248,7 +264,7 @@ export default function Dashboard() {
               SCORE PROMEDIO
             </span>
             <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">
-              41 Activos
+              {datosScreener.length} Activos
             </span>
           </div>
 
@@ -296,11 +312,11 @@ export default function Dashboard() {
           <div className="mt-3 pt-3 border-t border-slate-800 flex items-center justify-between">
             <button
               onClick={onEjecutarAnalisis}
-              disabled={ejecutandoInsight}
+              disabled={estaCargando}
               className="w-full py-2 px-3 rounded-xl bg-orange-600 hover:bg-orange-500 text-white font-mono text-xs font-bold transition flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
             >
-              <Zap className={`w-3.5 h-3.5 ${ejecutandoInsight ? 'animate-spin' : ''}`} />
-              <span>{ejecutandoInsight ? 'Calculando...' : 'Re-Calcular Modelos'}</span>
+              <Zap className={`w-3.5 h-3.5 ${estaCargando ? 'animate-spin' : ''}`} />
+              <span>{estaCargando ? 'Calculando...' : 'Re-Calcular Modelos'}</span>
             </button>
           </div>
         </div>

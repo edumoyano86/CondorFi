@@ -14,6 +14,7 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import { createChart, CandlestickSeries, ColorType, CrosshairMode } from 'lightweight-charts';
 import { useCurrency, convertirMonto } from '../context/CurrencyContext';
+import { clasificarActivo } from './ScreenerDataGrid';
 import {
   Maximize2,
   Minimize2,
@@ -61,7 +62,13 @@ export const TICKERS_CONFIG = [
   { ticker: 'BNB',     categoria: 'Cripto',      nombre: 'BNB Chain',                      mercado: 'Cripto ARS', moneda: 'ARS', base: 910000, open: 895000 },
   { ticker: 'USDT',    categoria: 'Cripto',      nombre: 'Tether USD',                     mercado: 'Cripto ARS', moneda: 'ARS', base: 1612, open: 1610 },
   { ticker: 'XRP',     categoria: 'Cripto',      nombre: 'XRP (Ripple)',                   mercado: 'Cripto ARS', moneda: 'ARS', base: 950, open: 935 },
-  { ticker: 'AVAX',    categoria: 'Cripto',      nombre: 'Avalanche',                      mercado: 'Cripto ARS', moneda: 'ARS', base: 42500, open: 41800 }
+  { ticker: 'AVAX',    categoria: 'Cripto',      nombre: 'Avalanche',                      mercado: 'Cripto ARS', moneda: 'ARS', base: 42500, open: 41800 },
+
+  // 5. ETFs Estratégicos & Dividendos (USD)
+  { ticker: 'SCHD',    categoria: 'Wall Street', nombre: 'Schwab US Dividend Equity ETF',   mercado: 'NYSE Arca', moneda: 'USD', base: 28.50, open: 28.40 },
+  { ticker: 'JEPI',    categoria: 'Wall Street', nombre: 'JPMorgan Equity Premium Income',  mercado: 'NYSE Arca', moneda: 'USD', base: 58.20, open: 58.10 },
+  { ticker: 'VIG',     categoria: 'Wall Street', nombre: 'Vanguard Dividend Appreciation',  mercado: 'NYSE Arca', moneda: 'USD', base: 195.40, open: 194.80 },
+  { ticker: 'QQQM',    categoria: 'Wall Street', nombre: 'Invesco Nasdaq 100 Low-Cost ETF', mercado: 'NASDAQ',    moneda: 'USD', base: 215.10, open: 214.20 }
 ];
 
 
@@ -75,7 +82,11 @@ export const clasificarTickerChart = (t) => {
   return 'Acciones';
 };
 
-export default function TradFiCandlestickChart({ registrosTradfi = [], filtroCategoria = null }) {
+export default function TradFiCandlestickChart({
+  registrosTradfi = [],
+  filtroCategoria = null,
+  datosScreener = []
+}) {
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
@@ -91,10 +102,45 @@ export default function TradFiCandlestickChart({ registrosTradfi = [], filtroCat
     return filtroCategoria;
   }, [filtroCategoria]);
 
+  // Selección dinámica de activos ordenados por mayor volumen de negociación
   const tickersDisponibles = useMemo(() => {
+    if (Array.isArray(datosScreener) && datosScreener.length > 0) {
+      const adaptados = datosScreener.map(item => {
+        const ticker = item.activo || item.ticker;
+        const categoria = clasificarActivo(item);
+        // Volumen real o estimado para ranking dinámico
+        const vol = Number(
+          item.volumen ||
+          item.volumen24h ||
+          (Math.abs(item.variacion24h || 1) * (item.precioActual || 100)) ||
+          0
+        );
+        return {
+          ticker,
+          categoria,
+          nombre: item.nombre || ticker,
+          mercado: item.mercado || categoria,
+          moneda: item.moneda || ((ticker === '^MERV' || ticker.endsWith('.BA')) ? 'ARS' : 'USD'),
+          base: Number(item.precioActual) || 100,
+          open: Number(item.precioApertura) || Number(item.precioActual) || 100,
+          volumen: vol
+        };
+      });
+
+      const filtrados = categoriaNormalizada
+        ? adaptados.filter(t => t.categoria === categoriaNormalizada)
+        : adaptados;
+
+      // Ordenar por volumen descendente (activos con mayor volumen primero)
+      const ordenados = [...filtrados].sort((a, b) => b.volumen - a.volumen);
+      if (ordenados.length > 0) {
+        return ordenados;
+      }
+    }
+
     if (!categoriaNormalizada) return TICKERS_CONFIG;
     return TICKERS_CONFIG.filter(t => clasificarTickerChart(t) === categoriaNormalizada);
-  }, [categoriaNormalizada]);
+  }, [datosScreener, categoriaNormalizada]);
 
   const [tickerActivo, setTickerActivo] = useState(tickersDisponibles[0]?.ticker || 'SPY');
   const [ohlcHover, setOhlcHover] = useState(null);
@@ -325,7 +371,7 @@ export default function TradFiCandlestickChart({ registrosTradfi = [], filtroCat
               className="pl-3 pr-8 py-2 rounded-xl border border-gray-300 bg-white text-xs font-mono font-bold text-gray-900 shadow-xs focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 cursor-pointer"
             >
               {categoriaNormalizada ? (
-                <optgroup label={`Activos en ${categoriaNormalizada}`}>
+                <optgroup label={`Top Activos por Volumen en ${categoriaNormalizada} (${tickersDisponibles.length})`}>
                   {tickersDisponibles.map(t => (
                     <option key={t.ticker} value={t.ticker}>
                       {t.ticker} • {t.nombre} ({t.moneda})
@@ -334,29 +380,29 @@ export default function TradFiCandlestickChart({ registrosTradfi = [], filtroCat
                 </optgroup>
               ) : (
                 <>
-                  <optgroup label="🇺🇸 Wall Street (Índices & Tech)">
-                    {TICKERS_CONFIG.filter(t => t.categoria === 'Wall Street').map(t => (
+                  <optgroup label={`🪙 Criptomonedas (${tickersDisponibles.filter(t => t.categoria === 'Criptomonedas').length})`}>
+                    {tickersDisponibles.filter(t => t.categoria === 'Criptomonedas').map(t => (
                       <option key={t.ticker} value={t.ticker}>
                         {t.ticker} • {t.nombre} ({t.moneda})
                       </option>
                     ))}
                   </optgroup>
-                  <optgroup label="🇦🇷 Argentina & Merval (BYMA)">
-                    {TICKERS_CONFIG.filter(t => t.categoria === 'Merval').map(t => (
+                  <optgroup label={`🏢 Acciones (${tickersDisponibles.filter(t => t.categoria === 'Acciones').length})`}>
+                    {tickersDisponibles.filter(t => t.categoria === 'Acciones').map(t => (
                       <option key={t.ticker} value={t.ticker}>
                         {t.ticker} • {t.nombre} ({t.moneda})
                       </option>
                     ))}
                   </optgroup>
-                  <optgroup label="🏛️ Bonos Soberanos & Renta Fija">
-                    {TICKERS_CONFIG.filter(t => t.categoria === 'Bonos').map(t => (
+                  <optgroup label={`📊 Índices (${tickersDisponibles.filter(t => t.categoria === 'Índices').length})`}>
+                    {tickersDisponibles.filter(t => t.categoria === 'Índices').map(t => (
                       <option key={t.ticker} value={t.ticker}>
                         {t.ticker} • {t.nombre} ({t.moneda})
                       </option>
                     ))}
                   </optgroup>
-                  <optgroup label="🪙 Criptoactivos Top (ARS)">
-                    {TICKERS_CONFIG.filter(t => t.categoria === 'Cripto').map(t => (
+                  <optgroup label={`🏛️ Bonos (${tickersDisponibles.filter(t => t.categoria === 'Bonos').length})`}>
+                    {tickersDisponibles.filter(t => t.categoria === 'Bonos').map(t => (
                       <option key={t.ticker} value={t.ticker}>
                         {t.ticker} • {t.nombre} ({t.moneda})
                       </option>
@@ -367,17 +413,18 @@ export default function TradFiCandlestickChart({ registrosTradfi = [], filtroCat
             </select>
           </div>
 
-          {/* Accesos rápidos (Pill Badges) adaptados a la categoría filtrada */}
-          <div className="hidden sm:flex items-center gap-1">
-            {tickersDisponibles.slice(0, 6).map((item) => (
+          {/* Accesos rápidos (Pill Badges) adaptados dinámicamente según mayor volumen */}
+          <div className="hidden sm:flex items-center gap-1 overflow-x-auto max-w-md py-0.5 scrollbar-none">
+            {tickersDisponibles.slice(0, 8).map((item) => (
               <button
                 key={item.ticker}
                 onClick={() => setTickerActivo(item.ticker)}
-                className={`px-2 py-1 rounded-md text-[11px] font-mono font-bold transition cursor-pointer ${
+                className={`px-2 py-1 rounded-md text-[11px] font-mono font-bold transition cursor-pointer shrink-0 ${
                   tickerActivo === item.ticker
                     ? 'bg-gray-900 text-white shadow-2xs'
                     : 'bg-gray-200/80 hover:bg-gray-300 text-gray-700'
                 }`}
+                title={`${item.nombre} (Top Volumen)`}
               >
                 {item.ticker}
               </button>

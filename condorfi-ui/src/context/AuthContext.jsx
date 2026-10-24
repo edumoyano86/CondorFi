@@ -21,6 +21,7 @@ const AuthContext = createContext({
   loading: true,
   error: null,
   signIn: async () => {},
+  signInWithGoogle: async () => {},
   signUp: async () => {},
   signOut: async () => {},
   loginDemo: () => {},
@@ -134,6 +135,30 @@ export function AuthProvider({ children }) {
   }, []);
 
   /**
+   * Inicio de Sesión Institucional mediante Google OAuth
+   */
+  const signInWithGoogle = useCallback(async () => {
+    setError(null);
+    if (!supabase) {
+      throw new Error('El cliente de Supabase no está configurado. Use el modo Demo.');
+    }
+
+    const { data, error: errOAuth } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: `${window.location.origin}/dashboard`
+      }
+    });
+
+    if (errOAuth) {
+      setError(errOAuth.message);
+      throw errOAuth;
+    }
+
+    return data;
+  }, []);
+
+  /**
    * Registro Institucional de Nuevo Operador
    */
   const signUp = useCallback(async ({ email, password, nombre }) => {
@@ -218,11 +243,12 @@ export function AuthProvider({ children }) {
     loading,
     error,
     signIn,
+    signInWithGoogle,
     signUp,
     signOut,
     loginDemo,
     isAuthenticated: Boolean(user)
-  }), [user, session, loading, error, signIn, signUp, signOut, loginDemo]);
+  }), [user, session, loading, error, signIn, signInWithGoogle, signUp, signOut, loginDemo]);
 
   return (
     <AuthContext.Provider value={value}>

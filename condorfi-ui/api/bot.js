@@ -28,13 +28,67 @@ if (!globalThis.WebSocket) {
 }
 
 export const TOP_CRIPTO_DEFAULT = [
-  // Top 10 Core
+  // 1-10: Top 10 Core
   'USDT', 'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'AVAX', 'DOGE', 'LINK',
-  // Layer 1, DeFi & Smart Contracts (11 - 20)
+  // 11-25: Layer 1, DeFi & Smart Contracts
   'DOT', 'MATIC', 'SHIB', 'LTC', 'UNI', 'ATOM', 'NEAR', 'ARB', 'OP', 'INJ',
-  // Expansión Institucional Top 30
-  'TON', 'TRX', 'BCH', 'ETC', 'FIL', 'LDO', 'APT', 'SUI', 'RNDR', 'XLM'
+  'TON', 'TRX', 'BCH', 'ETC', 'FIL',
+  // 26-50: High-Cap & Emerging Titans
+  'LDO', 'APT', 'SUI', 'RNDR', 'XLM', 'HBAR', 'KAS', 'PEPE', 'FET', 'TAO',
+  'STX', 'AAVE', 'MKR', 'GRT', 'THETA', 'FTM', 'ALGO', 'FLOW', 'SAND', 'MANA',
+  'AXS', 'EGLD', 'EOS', 'CHZ', 'DYDX',
+  // 51-75: Memecoins, Layer 2 & DeFi Innovators
+  'WIF', 'BONK', 'FLOKI', 'TIA', 'SEI', 'JUP', 'PYTH', 'STRK', 'IMX', 'BEAM',
+  'CRV', 'SNX', 'COMP', '1INCH', 'PENDLE', 'ONDO', 'WLD', 'AGIX', 'OCEAN', 'GALA',
+  'ENS', 'BLUR', 'MINA', 'ROSE', 'CFX',
+  // 76-100: Established Alts, Cross-Chain & Gaming
+  'GNO', 'KAVA', 'QNT', 'NEO', 'IOTA', 'XTZ', 'ZEC', 'DASH', 'BSV', 'KLAY',
+  'RON', 'BERA', 'RAY', 'OSMO', 'KSM', 'APE', 'CHR', 'LRC', 'ENJ', 'BAT',
+  'ZIL', 'HOT', 'ANKR', 'ILV', 'SUPER'
 ];
+
+/**
+ * Divide un array en lotes (chunks) de tamaño especificado.
+ */
+export function chunkArray(array, tamano = 15) {
+  const chunks = [];
+  for (let i = 0; i < array.length; i += tamano) {
+    chunks.push(array.slice(i, i + tamano));
+  }
+  return chunks;
+}
+
+/**
+ * Procesa activos cripto en lotes con concurrencia controlada mediante Promise.allSettled
+ * y un retraso institucional de 1200ms entre lotes para prevenir bloqueos por rate-limits (HTTP 429).
+ * Resiliencia total: Si un activo específico falla, se captura, se ignora y se continúa con el resto del lote,
+ * retornando únicamente los datos de las promesas en estado fulfilled.
+ */
+export async function procesarEnLotes(items, batchSize = 15, fnProcesamiento, delayMs = 1200) {
+  const lotes = chunkArray(items, batchSize);
+  const exitosos = [];
+
+  for (let i = 0; i < lotes.length; i++) {
+    const lote = lotes[i];
+    const promesasLote = lote.map(async (item) => {
+      return await fnProcesamiento(item);
+    });
+
+    const resultadosLote = await Promise.allSettled(promesasLote);
+
+    for (const res of resultadosLote) {
+      if (res.status === 'fulfilled' && res.value !== null && res.value !== undefined) {
+        exitosos.push(res.value);
+      }
+    }
+
+    if (i < lotes.length - 1 && delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
+  return exitosos;
+}
 
 // Configuración general del enjambre multi-activo y parámetros matemáticos
 const CONFIG = {
@@ -479,8 +533,9 @@ export default async function handler(req, res) {
     // Obtener tasa de referencia USDT/ARS para la conversión de altcoins
     const usdtRate = await obtenerTasaUsdtArs();
 
-    // Recolectar cotizaciones y calcular spread por cada activo concurrentemente con Promise.allSettled
-    const promesasActivos = monedasAConsultar.map(async moneda => {
+    // Recolectar cotizaciones y calcular spread en lotes concurrentes (Batching de 15 activos con 200ms de delay)
+    const BATCH_SIZE = 15;
+    const exitosos = await procesarEnLotes(monedasAConsultar, BATCH_SIZE, async (moneda) => {
       try {
         const cotizaciones = await recolectarCotizacionesParaMoneda(moneda, usdtRate);
         const oportunidad = calcularSpread(cotizaciones, moneda);
@@ -488,41 +543,75 @@ export default async function handler(req, res) {
       } catch (errActivo) {
         throw new Error(`Error en activo ${moneda}: ${errActivo.message}`);
       }
+    }, 1200);
+
+    const fallidosCount = Math.max(0, monedasAConsultar.length - exitosos.length);
+
+    exitosos.forEach((item) => {
+      const { moneda, cotizaciones, oportunidad } = item;
+      metricasRecoleccion[moneda] = {
+        totalExchangesConsultados: cotizaciones?.length || 0
+      };
+
+      if (oportunidad) {
+        resumenOportunidades[moneda] = oportunidad;
+
+        oportunidadesParaInsertar.push({
+          timestamp: oportunidad.timestamp,
+          moneda: oportunidad.moneda,
+          exchange: `${oportunidad.exchange_compra} -> ${oportunidad.exchange_venta}`,
+          exchange_compra: oportunidad.exchange_compra,
+          exchange_venta: oportunidad.exchange_venta,
+          precio_compra: oportunidad.precio_compra,
+          precio_venta: oportunidad.precio_venta,
+          spread: oportunidad.spread
+        });
+      } else {
+        const motivo = `Sin cotizaciones válidas disponibles (${cotizaciones?.length || 0} exchanges consultados)`;
+        console.warn(`[Bot Cripto] Sin paridad para [${moneda}]:`, motivo);
+        fallosPorActivo.push({ moneda, motivo });
+      }
     });
 
-    const resultadosSettled = await Promise.allSettled(promesasActivos);
-
-    resultadosSettled.forEach((item, idx) => {
-      const monedaSolicitada = monedasAConsultar[idx];
-      if (item.status === 'fulfilled' && item.value) {
-        const { moneda, cotizaciones, oportunidad } = item.value;
-        metricasRecoleccion[moneda] = {
-          totalExchangesConsultados: cotizaciones.length
-        };
-
-        if (oportunidad) {
-          resumenOportunidades[moneda] = oportunidad;
-
-          oportunidadesParaInsertar.push({
-            timestamp: oportunidad.timestamp,
-            moneda: oportunidad.moneda,
-            exchange: `${oportunidad.exchange_compra} -> ${oportunidad.exchange_venta}`,
-            exchange_compra: oportunidad.exchange_compra,
-            exchange_venta: oportunidad.exchange_venta,
-            precio_compra: oportunidad.precio_compra,
-            precio_venta: oportunidad.precio_venta,
-            spread: oportunidad.spread
-          });
-        } else {
-          const motivo = `Sin cotizaciones válidas disponibles (${cotizaciones.length} exchanges consultados)`;
-          console.error(`Fallo en activo cripto [${monedaSolicitada}]:`, motivo);
-          fallosPorActivo.push({ moneda: monedaSolicitada, motivo });
-        }
-      } else {
-        const motivo = item.reason?.message || String(item.reason || 'Rechazo no controlado');
-        console.error(`Fallo en activo cripto [${monedaSolicitada}]:`, motivo);
-        fallosPorActivo.push({ moneda: monedaSolicitada, motivo });
-      }
+    // Screener enriquecido para consumo instantáneo en la UI
+    const screenerCripto = oportunidadesParaInsertar.map(op => {
+      const precio = Number(op.precio_compra || op.precio_venta || 0);
+      const spread = Number(op.spread || 0);
+      const score = Math.min(99, Math.max(1, Math.round(50 + spread * 10)));
+      return {
+        activo: op.moneda,
+        ticker: op.moneda,
+        nombre: op.moneda,
+        mercado: 'Cripto ARS',
+        tipoMercado: 'cripto',
+        moneda: 'ARS',
+        precioActual: precio,
+        precioApertura: precio,
+        variacion24h: spread,
+        spreadActual: spread,
+        exchangeCompra: op.exchange_compra,
+        exchangeVenta: op.exchange_venta,
+        condorScore: score,
+        dictamen: spread >= 2.0 ? 'STRONG_BUY' : (spread >= 0.8 ? 'BUY' : (spread <= -1.0 ? 'SELL' : 'HOLD')),
+        alineacion_temporal: spread > 0 ? 'ALINEADO_ALCISTA' : 'NEUTRAL',
+        rsi: Number((50 + spread * 5).toFixed(1)),
+        macd: {
+          macd: Number((spread * 0.1).toFixed(2)),
+          signal: 0,
+          histogram: Number((spread * 0.1).toFixed(2)),
+          cruceAlcista: spread > 0,
+          cruceBajista: spread < 0
+        },
+        bollinger: {
+          sma: precio,
+          upper: Number((precio * 1.02).toFixed(2)),
+          lower: Number((precio * 0.98).toFixed(2)),
+          bandwidth: 4.0,
+          percentB: 0.5
+        },
+        mensaje: `Arbitraje: ${op.exchange_compra} -> ${op.exchange_venta} (Spread Neto: ${spread}%)`,
+        timestamp: op.timestamp
+      };
     });
 
     // Inserción en lote (Bulk Insert) en Supabase en una sola operación
@@ -576,6 +665,8 @@ export default async function handler(req, res) {
       fallosDetalle: fallosPorActivo,
       registrosInsertados,
       oportunidades: resumenOportunidades,
+      activos: screenerCripto,
+      screener: screenerCripto,
       metricasRecoleccion
     });
   } catch (error) {
