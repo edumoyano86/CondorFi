@@ -14,11 +14,19 @@
  * ==============================================================================
  */
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useCurrency } from '../context/CurrencyContext';
 import { useAuth } from '../context/AuthContext';
+import {
+  ACCIONES_TECH,
+  INDICES_GLOBALES,
+  ETFS_ESTRATEGICOS,
+  TOP_CRIPTO,
+  BONOS_TICKERS,
+  TRADFI_ARG_BONOS
+} from '../lib/catalogoActivos';
 import {
   Briefcase,
   TrendingUp,
@@ -36,6 +44,7 @@ import {
   Percent,
   Search,
   CheckCircle2,
+  ChevronDown,
   X
 } from 'lucide-react';
 import {
@@ -47,6 +56,96 @@ import {
   XAxis,
   YAxis
 } from 'recharts';
+
+/**
+ * Catálogo Maestro Unificado de Activos Financieros
+ * Combina Criptomonedas, Acciones Tech, ETFs Estratégicos, Índices Globales y Renta Fija
+ */
+const CATALOGO_UNIFICADO_BASE = (() => {
+  const mapa = new Map();
+
+  // 1. Criptomonedas
+  (TOP_CRIPTO || []).forEach(ticker => {
+    const t = ticker.toUpperCase();
+    mapa.set(t, {
+      ticker: t,
+      nombre: `Criptoactivo ${t}`,
+      categoria: 'Criptomonedas',
+      tipoMercado: 'cripto',
+      moneda: 'ARS'
+    });
+  });
+
+  // 2. Acciones Tech & Mega-Cap NASDAQ / S&P 500
+  (ACCIONES_TECH || []).forEach(ticker => {
+    const t = ticker.toUpperCase();
+    if (!mapa.has(t)) {
+      mapa.set(t, {
+        ticker: t,
+        nombre: `${t} Inc. - Wall Street`,
+        categoria: 'Acciones',
+        tipoMercado: 'tradfi',
+        moneda: 'USD'
+      });
+    }
+  });
+
+  // 3. ETFs Estratégicos (Dividendos y Cobertura)
+  (ETFS_ESTRATEGICOS || []).forEach(ticker => {
+    const t = ticker.toUpperCase();
+    mapa.set(t, {
+      ticker: t,
+      nombre: `${t} - Strategic Dividend ETF`,
+      categoria: 'ETFs',
+      tipoMercado: 'tradfi',
+      moneda: 'USD'
+    });
+  });
+
+  // 4. Índices Financieros Globales
+  (INDICES_GLOBALES || []).forEach(ticker => {
+    const t = ticker.toUpperCase();
+    if (!mapa.has(t)) {
+      mapa.set(t, {
+        ticker: t,
+        nombre: t.startsWith('^') ? `Índice ${t}` : `${t} - Global Benchmark ETF`,
+        categoria: 'Índices',
+        tipoMercado: 'indices',
+        moneda: (t === '^MERV' || t.endsWith('.BA')) ? 'ARS' : 'USD'
+      });
+    }
+  });
+
+  // 5. Renta Fija & Bonos Soberanos / Treasuries
+  (BONOS_TICKERS || []).forEach(ticker => {
+    const t = ticker.toUpperCase();
+    mapa.set(t, {
+      ticker: t,
+      nombre: t.includes('30') || t.includes('29') || t.includes('35') || t.includes('38')
+        ? `Bono Soberano ${t}`
+        : `Treasury / Bond ETF ${t}`,
+      categoria: 'Bonos',
+      tipoMercado: 'bonos',
+      moneda: t.endsWith('.BA') ? 'ARS' : 'USD'
+    });
+  });
+
+  // 6. Mercado Argentino BYMA y CEDEARs
+  (TRADFI_ARG_BONOS || []).forEach(ticker => {
+    const t = ticker.toUpperCase();
+    if (!mapa.has(t)) {
+      mapa.set(t, {
+        ticker: t,
+        nombre: t.endsWith('.BA') ? `Acción BYMA ${t}` : `Cedear / ADR ${t}`,
+        categoria: t.includes('30') || t.includes('29') ? 'Bonos' : 'Acciones',
+        tipoMercado: 'tradfi',
+        moneda: t.endsWith('.BA') ? 'ARS' : 'USD'
+      });
+    }
+  });
+
+  return Array.from(mapa.values());
+})();
 
 // Datos semilla de contingencia institucional en caso de tabla remota no inicializada
 const CARTERA_SEMILLA = [
@@ -148,13 +247,83 @@ export default function Portfolio() {
   const [filtroBusqueda, setFiltroBusqueda] = useState('');
   const [filtroMercado, setFiltroMercado] = useState('todos');
 
-  // Formulario de nueva posición
+  // Formulario de nueva posición y Autocomplete Combobox
   const [nuevoTicker, setNuevoTicker] = useState('BTC');
+  const [busquedaTicker, setBusquedaTicker] = useState('BTC');
+  const [dropdownAbierto, setDropdownAbierto] = useState(false);
   const [nuevaCantidad, setNuevaCantidad] = useState('');
   const [nuevoPrecioCompra, setNuevoPrecioCompra] = useState('');
   const [nuevaMoneda, setNuevaMoneda] = useState('ARS');
   const [nuevoTipoMercado, setNuevoTipoMercado] = useState('cripto');
   const [mensajeExito, setMensajeExito] = useState(null);
+  const comboboxRef = useRef(null);
+
+  // Cerrar dropdown flotante al hacer clic fuera del combobox
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (comboboxRef.current && !comboboxRef.current.contains(event.target)) {
+        setDropdownAbierto(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
+
+  // Catálogo unificado enriquecido con cotizaciones en tiempo real del Screener
+  const catalogoCombinado = useMemo(() => {
+    const mapa = new Map();
+
+    // 1. Cargar activos de la fuente unificada (catalogoActivos.js)
+    CATALOGO_UNIFICADO_BASE.forEach(item => {
+      mapa.set(item.ticker.toUpperCase(), { ...item });
+    });
+
+    // 2. Enriquecer o agregar con datos dinámicos recibidos por datosScreener
+    (datosScreener || []).forEach(item => {
+      const t = (item.activo || item.ticker || '').toUpperCase();
+      if (t) {
+        const previo = mapa.get(t);
+        mapa.set(t, {
+          ticker: t,
+          nombre: item.nombre || previo?.nombre || t,
+          categoria: previo?.categoria || (item.tipoMercado === 'cripto' ? 'Criptomonedas' : 'Acciones'),
+          tipoMercado: item.tipoMercado || previo?.tipoMercado || 'tradfi',
+          moneda: item.moneda || previo?.moneda || 'USD',
+          precioActual: item.precioActual || null
+        });
+      }
+    });
+
+    return Array.from(mapa.values());
+  }, [datosScreener]);
+
+  // Filtrado en tiempo real sin límites arbitrarios (sin .slice())
+  const opcionesFiltradas = useMemo(() => {
+    const q = (busquedaTicker || '').trim().toLowerCase();
+    if (!q) {
+      return catalogoCombinado;
+    }
+    return catalogoCombinado.filter(item => {
+      const matchTicker = (item.ticker || '').toLowerCase().includes(q);
+      const matchNombre = (item.nombre || '').toLowerCase().includes(q);
+      const matchCat = (item.categoria || '').toLowerCase().includes(q);
+      return matchTicker || matchNombre || matchCat;
+    });
+  }, [catalogoCombinado, busquedaTicker]);
+
+  // Manejador al seleccionar un elemento del combobox
+  const handleSeleccionarActivo = (item) => {
+    setNuevoTicker(item.ticker);
+    setBusquedaTicker(item.ticker);
+    setNuevaMoneda(item.moneda || 'USD');
+    setNuevoTipoMercado(item.tipoMercado || 'tradfi');
+    if (item.precioActual) {
+      setNuevoPrecioCompra(String(item.precioActual));
+    }
+    setDropdownAbierto(false);
+  };
 
   // 1. Cargar posiciones desde Supabase si está disponible (con aislamiento RLS por usuario)
   const cargarPosicionesSupabase = useCallback(async () => {
@@ -189,7 +358,7 @@ export default function Portfolio() {
 
   // Sincronizar precio sugerido al cambiar de ticker en el modal
   useEffect(() => {
-    const itemScreener = datosScreener.find(d => d.activo.toUpperCase() === nuevoTicker.toUpperCase());
+    const itemScreener = catalogoCombinado.find(d => d.ticker.toUpperCase() === nuevoTicker.toUpperCase());
     if (itemScreener) {
       setNuevoTipoMercado(itemScreener.tipoMercado || 'tradfi');
       setNuevaMoneda(itemScreener.moneda || 'USD');
@@ -197,7 +366,7 @@ export default function Portfolio() {
         setNuevoPrecioCompra(String(itemScreener.precioActual));
       }
     }
-  }, [nuevoTicker, datosScreener, nuevoPrecioCompra]);
+  }, [nuevoTicker, catalogoCombinado, nuevoPrecioCompra]);
 
   // 2. Cruce de datos de cartera con el feed de precios en vivo del Screener
   const posicionesConMetricas = useMemo(() => {
@@ -425,7 +594,11 @@ export default function Portfolio() {
           </button>
 
           <button
-            onClick={() => setModalAbierto(true)}
+            onClick={() => {
+              setBusquedaTicker(nuevoTicker || '');
+              setDropdownAbierto(false);
+              setModalAbierto(true);
+            }}
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-mono font-bold text-white bg-orange-600 hover:bg-orange-700 shadow-sm transition active:scale-95 cursor-pointer"
           >
             <PlusCircle className="w-4 h-4" />
@@ -900,35 +1073,105 @@ export default function Portfolio() {
             </div>
 
             <form onSubmit={agregarPosicion} className="p-6 space-y-4 font-mono text-xs">
-              {/* Ticker Selector */}
-              <div>
-                <label className="block text-slate-700 font-bold mb-1.5">
-                  Ticker del Instrumento:
-                </label>
-                <select
-                  value={nuevoTicker}
-                  onChange={e => {
-                    setNuevoTicker(e.target.value);
-                    setNuevoPrecioCompra('');
-                  }}
-                  className="w-full p-2.5 rounded-xl border border-slate-200 bg-white font-mono text-xs focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 focus:outline-none"
-                >
-                  <optgroup label="Criptomonedas (Top 20)">
-                    {['BTC', 'ETH', 'SOL', 'USDT', 'XRP', 'ADA', 'AVAX', 'DOGE', 'LINK', 'LTC'].map(t => (
-                      <option key={t} value={t}>{t} - Criptoactivo</option>
-                    ))}
-                  </optgroup>
-                  <optgroup label="TradFi Wall Street & ETFs">
-                    {['SPY', 'QQQ', 'DIA', 'IWM', 'AAPL', 'MSFT', 'NVDA', 'TSLA', 'AMZN', 'TLT'].map(t => (
-                      <option key={t} value={t}>{t} - Activo Global</option>
-                    ))}
-                  </optgroup>
-                  <optgroup label="TradFi Argentina (BYMA)">
-                    {['^MERV', 'GGAL.BA', 'YPFD.BA', 'PAMP.BA', 'AL30.BA', 'GD30.BA'].map(t => (
-                      <option key={t} value={t}>{t} - Mercado Local</option>
-                    ))}
-                  </optgroup>
-                </select>
+              {/* Ticker Selector con Autocomplete Personalizado (Combobox) */}
+              <div className="relative" ref={comboboxRef}>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-slate-700 font-bold">
+                    Ticker del Instrumento:
+                  </label>
+                  <span className="text-[10px] font-mono text-slate-400">
+                    {opcionesFiltradas.length} activos disponibles
+                  </span>
+                </div>
+
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+                    <Search className="w-4 h-4" />
+                  </div>
+                  <input
+                    type="text"
+                    required
+                    value={busquedaTicker}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setBusquedaTicker(val);
+                      setNuevoTicker(val.toUpperCase().trim());
+                      setDropdownAbierto(true);
+                    }}
+                    onFocus={() => setDropdownAbierto(true)}
+                    placeholder="Buscar por ticker o nombre (ej. NVDA, BTC, SPY, AL30)..."
+                    className="w-full pl-9 pr-10 py-2.5 rounded-xl border border-slate-200 bg-white font-mono text-xs focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 focus:outline-none uppercase"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setDropdownAbierto(prev => !prev)}
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600 cursor-pointer"
+                  >
+                    <ChevronDown className={`w-4 h-4 transition-transform duration-150 ${dropdownAbierto ? 'rotate-180 text-orange-600' : ''}`} />
+                  </button>
+                </div>
+
+                {/* Dropdown Flotante con scroll natural (Sin límites arbitrarios / Sin .slice()) */}
+                {dropdownAbierto && (
+                  <div className="absolute left-0 right-0 top-full mt-1.5 bg-white border border-slate-200 rounded-xl shadow-2xl max-h-60 overflow-y-auto z-50 divide-y divide-slate-100 animate-in fade-in zoom-in-95 duration-100">
+                    {opcionesFiltradas.length > 0 ? (
+                      opcionesFiltradas.map((item) => {
+                        const esSeleccionado = nuevoTicker.toUpperCase() === item.ticker.toUpperCase();
+                        return (
+                          <div
+                            key={item.ticker}
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              handleSeleccionarActivo(item);
+                            }}
+                            className={`p-2.5 flex items-center justify-between hover:bg-orange-50 transition cursor-pointer ${
+                              esSeleccionado ? 'bg-orange-50/70' : ''
+                            }`}
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <span className="font-mono font-bold text-xs text-slate-900 px-2 py-0.5 rounded bg-slate-100 border border-slate-200 shrink-0">
+                                {item.ticker}
+                              </span>
+                              <div className="truncate min-w-0">
+                                <p className="text-xs font-semibold text-slate-800 truncate font-sans">
+                                  {item.nombre}
+                                </p>
+                                <p className="text-[10px] text-slate-400 font-mono">
+                                  {item.categoria} &bull; {item.moneda}
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="text-right shrink-0 ml-2">
+                              {item.precioActual ? (
+                                <span className="font-mono text-xs font-bold text-slate-900 block">
+                                  ${Number(item.precioActual).toLocaleString('es-AR', { maximumFractionDigits: 2 })}
+                                </span>
+                              ) : null}
+                              <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded font-bold ${
+                                item.categoria === 'Criptomonedas'
+                                  ? 'bg-orange-100 text-orange-700'
+                                  : item.categoria === 'Acciones'
+                                  ? 'bg-blue-100 text-blue-700'
+                                  : item.categoria === 'ETFs'
+                                  ? 'bg-emerald-100 text-emerald-700'
+                                  : item.categoria === 'Índices'
+                                  ? 'bg-purple-100 text-purple-700'
+                                  : 'bg-amber-100 text-amber-700'
+                              }`}>
+                                {item.categoria}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <div className="p-4 text-center text-slate-400 font-mono text-xs">
+                        No se encontraron activos para "{busquedaTicker}"
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Cantidad y Moneda */}
