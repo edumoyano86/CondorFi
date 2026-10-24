@@ -12,12 +12,13 @@
  * ==============================================================================
  */
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { NavLink, Outlet, useLocation, Link } from 'react-router-dom';
 import condorLogo from '../assets/condorfi-logo.png';
 import { useCurrency } from '../context/CurrencyContext';
 import { useAuth } from '../context/AuthContext';
 import { clasificarActivo } from '../components/ScreenerDataGrid';
+import TelegramConfig from '../components/TelegramConfig';
 import {
   LayoutDashboard,
   Home as HomeIcon,
@@ -39,7 +40,8 @@ import {
   LogOut,
   UserCheck,
   ShieldCheck,
-  FlaskConical
+  FlaskConical,
+  Send
 } from 'lucide-react';
 
 export const RUTAS_NAVEGACION = [
@@ -106,6 +108,13 @@ export const RUTAS_NAVEGACION = [
     subLabel: 'Simulación Quant',
     icon: FlaskConical,
     badge: 'Lab'
+  },
+  {
+    path: '/telegram',
+    label: 'Bot Telegram',
+    subLabel: 'Alertas en Vivo',
+    icon: Send,
+    badge: 'Bot'
   }
 ];
 
@@ -121,6 +130,7 @@ export default function Layout({
   const location = useLocation();
   const { monedaGlobal, setMonedaGlobal, tasaCambio } = useCurrency();
   const { user, signOut, isAuthenticated } = useAuth();
+  const [modalTelegramAbierto, setModalTelegramAbierto] = useState(false);
 
   // Conteo dinámico sincronizado en tiempo real sobre los activos del screener
   const datosScreener = outletContext.datosScreener || [];
@@ -460,6 +470,17 @@ export default function Layout({
               )}
             </button>
 
+            {/* Botón de Vinculación de Telegram */}
+            <button
+              type="button"
+              onClick={() => setModalTelegramAbierto(true)}
+              title="Vincular Alertas con Bot de Telegram"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-mono font-semibold border transition active:scale-95 cursor-pointer shadow-2xs bg-sky-50 text-sky-800 border-sky-300 hover:bg-sky-100"
+            >
+              <Send className="w-3.5 h-3.5 text-sky-600 -rotate-12 translate-x-0.5" />
+              <span className="hidden sm:inline">Bot Telegram</span>
+            </button>
+
             {/* Botón de Escaneo / Sincronización Manual */}
             <button
               onClick={fetchCotizacionesReales}
@@ -517,6 +538,15 @@ export default function Layout({
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 space-y-6">
           <Outlet context={outletContext} />
         </main>
+
+        {/* Modal de Configuración y Vinculación de Telegram */}
+        {modalTelegramAbierto && (
+          <TelegramConfig
+            enModal={true}
+            isOpen={modalTelegramAbierto}
+            onClose={() => setModalTelegramAbierto(false)}
+          />
+        )}
       </div>
     </div>
   );

@@ -33,6 +33,7 @@ import StrategyBuilder from './pages/StrategyBuilder';
 import Login from './pages/Login';
 import Auth from './pages/Auth';
 import ProtectedRoute from './components/ProtectedRoute';
+import TelegramConfig from './components/TelegramConfig';
 import { CurrencyProvider } from './context/CurrencyContext';
 import { AuthProvider } from './context/AuthContext';
 import { generarScreenerInicialCompleto } from './lib/catalogoActivos';
@@ -790,6 +791,10 @@ export default function App() {
               {/* Motor de Backtesting Institucional */}
               <Route path="/backtesting" element={<Backtesting />} />
               <Route path="/backtest" element={<Backtesting />} />
+
+              {/* Vinculación y Configuración del Bot de Telegram */}
+              <Route path="/telegram" element={<div className="flex justify-center py-4"><TelegramConfig /></div>} />
+              <Route path="/configuracion" element={<div className="flex justify-center py-4"><TelegramConfig /></div>} />
 
               {/* Categorías dinámicas */}
               <Route path="/:categoria" element={<VistaMercado />} />
