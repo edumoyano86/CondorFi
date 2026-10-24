@@ -5,7 +5,7 @@
   "main": "bot_cripto.js",
   "type": "module",
   "scripts": {
-    "build": "npm --prefix condorfi-ui run build",
+    "build": "npm --prefix condorfi-ui run build && rm -rf dist && cp -r condorfi-ui/dist dist",
     "dev": "npm --prefix condorfi-ui run dev",
     "dev:ui": "npm --prefix condorfi-ui run dev",
     "dev:bot": "node --watch bot_cripto.js",

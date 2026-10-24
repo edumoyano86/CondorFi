@@ -57,6 +57,7 @@ export default function TelegramConfig({ isOpen = true, onClose = null, enModal 
   const [chatId, setChatId] = useState(null);
   const [cargando, setCargando] = useState(true);
   const [generando, setGenerando] = useState(false);
+  const [enviandoTest, setEnviandoTest] = useState(false);
   const [copiado, setCopiado] = useState(false);
   const [errorMsg, setErrorMsg] = useState(null);
   const [exitoMsg, setExitoMsg] = useState(null);
@@ -207,6 +208,69 @@ export default function TelegramConfig({ isOpen = true, onClose = null, enModal 
     }
   };
 
+  /**
+   * 4. Envía un mensaje de prueba instantáneo a través de /api/telegram/send
+   *    para confirmar que el canal de salida hacia el celular del operador funciona.
+   */
+  const handleEnviarTest = async () => {
+    if (!user || !user.id) {
+      setErrorMsg('Debes iniciar sesión para realizar la prueba.');
+      return;
+    }
+
+    setEnviandoTest(true);
+    setErrorMsg(null);
+    setExitoMsg(null);
+
+    try {
+      // Obtener el JWT de la sesión activa de Supabase
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+
+      const headers = {
+        'Content-Type': 'application/json'
+      };
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+
+      const mensajeTest = 
+`🔔 *CondorFi - Test de Conectividad*
+────────────────────────
+✅ *Estado del canal:* Conexión Estable
+📱 *Chat ID:* \`${chatId || 'Vinculado'}\`
+⏱ *Hora:* ${new Date().toLocaleTimeString('es-AR')}
+
+¡Tu canal institucional de alertas cuantitativas y avisos de cartera está funcionando al 100%! 🚀
+
+────────────────────────
+_CondorFi Quantitative Terminal • Aislamiento RLS_`;
+
+      const response = await fetch('/api/telegram/send', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          user_id: user.id,
+          text: mensajeTest,
+          parse_mode: 'Markdown'
+        })
+      });
+
+      const resData = await response.json();
+
+      if (!response.ok || !resData.ok) {
+        throw new Error(resData.error || 'No se pudo despachar el mensaje de prueba a Telegram.');
+      }
+
+      setExitoMsg('¡Test de conectividad enviado con éxito a tu Telegram! Revisa tu celular.');
+    } catch (err) {
+      console.error('[TelegramConfig] Error al enviar test:', err);
+      setErrorMsg(err.message || 'Error al comunicarse con el servicio de alertas.');
+    } finally {
+      setEnviandoTest(false);
+    }
+  };
+
   // Cargar estado inicial
   useEffect(() => {
     cargarEstadoVinculacion();
@@ -349,8 +413,44 @@ export default function TelegramConfig({ isOpen = true, onClose = null, enModal 
               )}
             </div>
 
+            {/* Tarjeta de Prueba de Conectividad */}
+            <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 text-white space-y-3 shadow-md">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-bold uppercase tracking-wider text-orange-400 flex items-center gap-1.5">
+                  <Bell className="w-4 h-4" />
+                  Prueba de Salida en Vivo
+                </span>
+                <span className="text-[10px] text-slate-400 font-mono">
+                  Endpoint: /api/telegram/send
+                </span>
+              </div>
+              <p className="text-xs text-slate-300 font-sans leading-relaxed">
+                Envía una notificación instantánea a tu celular para confirmar que el motor de alertas y el canal de salida funcionan correctamente.
+              </p>
+              <div>
+                <button
+                  type="button"
+                  onClick={handleEnviarTest}
+                  disabled={enviandoTest || cargando}
+                  className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-400 hover:to-amber-500 text-white font-bold text-xs flex items-center justify-center gap-2 transition active:scale-98 shadow-md shadow-orange-500/20 cursor-pointer disabled:opacity-50"
+                >
+                  {enviandoTest ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin text-white" />
+                      <span>Despachando prueba a tu Telegram...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Send className="w-4 h-4 -rotate-12" />
+                      <span>Enviar Test de Conectividad</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
             {/* Acciones para bot vinculado */}
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-1">
               <a
                 href="https://t.me/CondorFi_bot"
                 target="_blank"
@@ -552,3 +652,4 @@ export default function TelegramConfig({ isOpen = true, onClose = null, enModal 
 
   return contenido;
 }
+

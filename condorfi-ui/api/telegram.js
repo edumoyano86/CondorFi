@@ -278,3 +278,4 @@ El código \`${codigoLimpio}\` no coincide con ninguna solicitud pendiente de vi
     return res.status(200).json({ ok: true, error: err.message });
   }
 }
+
