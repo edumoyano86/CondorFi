@@ -23,11 +23,23 @@ const yahooFinance = typeof YahooFinance === 'function'
   : YahooFinance;
 
 // Universos TradFi masivos por defecto (Top 100 Nasdaq, S&P 500, BYMA, CEDEARs y Bonos)
+export const CEDEARS_BYMA = [
+  'VIG.BA', 'SPY.BA', 'QQQ.BA', 'DIA.BA', 'IWM.BA', 'EEM.BA', 'EWZ.BA', 'ARKK.BA',
+  'AAPL.BA', 'MSFT.BA', 'NVDA.BA', 'AMZN.BA', 'GOOGL.BA', 'META.BA', 'TSLA.BA',
+  'KO.BA', 'MELI.BA', 'MCD.BA', 'DIS.BA', 'WMT.BA', 'JNJ.BA', 'PG.BA', 'XOM.BA',
+  'CVX.BA', 'BABA.BA', 'GLOB.BA', 'VIST.BA', 'PBR.BA', 'VALE.BA', 'AMD.BA',
+  'INTC.BA', 'QCOM.BA', 'CRM.BA', 'ADBE.BA', 'NFLX.BA', 'PYPL.BA', 'COIN.BA',
+  'SHOP.BA', 'UBER.BA', 'ABNB.BA', 'GOLD.BA', 'XLE.BA', 'XLF.BA', 'XLK.BA',
+  'DESP.BA', 'BIOX.BA', 'BBD.BA', 'ITUB.BA', 'MOAT.BA', 'VYM.BA', 'SCHD.BA'
+];
+
 export const TRADFI_ARG_BONOS = [
   // Índices & Acciones Líderes BYMA (Mercado Argentino)
   '^MERV', 'GGAL.BA', 'YPFD.BA', 'PAMP.BA', 'BMA.BA', 'CEPU.BA', 'TXAR.BA', 'ALUA.BA',
   'CRES.BA', 'EDN.BA', 'LOMA.BA', 'MIRG.BA', 'TECO2.BA', 'TGNO4.BA', 'TGSU2.BA', 'TRAN.BA', 'VALO.BA', 'BYMA.BA',
-  // CEDEARs & ADRs de Alta Liquidez
+  // CEDEARs de Mayor Volumen (Pesos ARS)
+  ...CEDEARS_BYMA,
+  // ADRs de Alta Liquidez
   'MELI', 'VIST', 'YPF', 'GLOB', 'BBD', 'ITUB', 'VALE', 'PBR',
   // Renta Fija Soberana y Cobertura (Ley Arg & NY + Treasuries)
   'AL30.BA', 'GD30.BA', 'AL35.BA', 'GD35.BA', 'AE38.BA', 'GD38.BA', 'AL29.BA', 'GD29.BA', 'TLT'

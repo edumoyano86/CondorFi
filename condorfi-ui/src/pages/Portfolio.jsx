@@ -4,16 +4,18 @@
  * Archivo: condorfi-ui/src/pages/Portfolio.jsx
  * 
  * Módulo Institucional de Gestión de Cartera Activa y Mark-to-Market en Vivo:
- * 1. Multiplicador FX Obligatorio:
- *    - Activos USD visualizados en ARS: Cantidad * Precio USD * Tasa Dólar en Vivo.
- *    - Activos ARS visualizados en USD: (Cantidad * Precio ARS) / Tasa Dólar en Vivo.
- * 2. Cotización y Sincronización en Tiempo Real:
- *    - Descarta valores estáticos/mock. Cruza tickers con /api/scrapper-tradfi (Yahoo Finance)
- *      y feeds de CriptoYa, inyectando las cotizaciones en el estado de la cartera.
- * 3. Formateo Financiero con Separador de Miles:
- *    - Cifras en ARS formateadas con notación 'es-AR' (ej. $1.448.480 ARS).
+ * 1. Soporte de Tickers Locales y CEDEARs (.BA):
+ *    - Catálogo maestro enriquecido con CEDEARs (ej: VIG.BA, SPY.BA, AAPL.BA, etc.).
+ *    - El buscador interactivo (combobox) permite seleccionar o tipear cualquier activo BYMA.
+ * 2. Lógica Condicional de FX:
+ *    - Activos con sufijo .BA (BYMA): La cotización de la API ya viene en Pesos Argentinos (ARS)
+ *      e incluye el tipo de cambio CCL implícito. Se OMITE el multiplicador del Dólar Cripto
+ *      y se utiliza el precio directo en pesos.
+ *    - En caso de alternar a USD, se divide por la tasa de cambio en vivo para obtener la paridad en divisa dura.
+ *    - Activos de Wall Street (USD): Se multiplican por el tipo de cambio en vivo únicamente si la vista está en ARS.
+ * 3. Formateo Financiero con Separador de Miles Oficial:
+ *    - Cifras en ARS formateadas con notación 'es-AR' (ej. $112.970 ARS).
  *    - Cifras en USD formateadas con notación 'en-US' (ej. $2,145.00 USD).
- * 4. Combobox de Autocomplete Unificado sin límites arbitrarios (270+ activos).
  * ==============================================================================
  */
 
@@ -33,7 +35,9 @@ import {
   ETFS_ESTRATEGICOS,
   TOP_CRIPTO,
   BONOS_TICKERS,
-  TRADFI_ARG_BONOS
+  TRADFI_ARG_BONOS,
+  CEDEARS_BYMA,
+  NOMBRES_CEDEARS
 } from '../lib/catalogoActivos';
 import {
   Briefcase,
@@ -55,7 +59,8 @@ import {
   ChevronDown,
   X,
   Radio,
-  Zap
+  Zap,
+  Info
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -69,12 +74,26 @@ import {
 
 /**
  * Catálogo Maestro Unificado de Activos Financieros
- * Combina Criptomonedas, Acciones Tech, ETFs Estratégicos, Índices Globales y Renta Fija
+ * Combina Criptomonedas, CEDEARs de BYMA, Acciones Tech, ETFs Estratégicos, Índices y Renta Fija
  */
 const CATALOGO_UNIFICADO_BASE = (() => {
   const mapa = new Map();
 
-  // 1. Criptomonedas
+  // 1. CEDEARs de BYMA (Mercado Argentino - Cotizados en Pesos ARS con CCL implícito)
+  (CEDEARS_BYMA || []).forEach(ticker => {
+    const t = ticker.toUpperCase();
+    const baseTicker = t.replace(/\.BA$/, '');
+    const desc = NOMBRES_CEDEARS?.[t] || `CEDEAR ${baseTicker} (BYMA)`;
+    mapa.set(t, {
+      ticker: t,
+      nombre: desc,
+      categoria: 'CEDEARs',
+      tipoMercado: 'tradfi',
+      moneda: 'ARS'
+    });
+  });
+
+  // 2. Criptomonedas
   (TOP_CRIPTO || []).forEach(ticker => {
     const t = ticker.toUpperCase();
     mapa.set(t, {
@@ -86,7 +105,7 @@ const CATALOGO_UNIFICADO_BASE = (() => {
     });
   });
 
-  // 2. Acciones Tech & Mega-Cap NASDAQ / S&P 500
+  // 3. Acciones Tech & Mega-Cap NASDAQ / S&P 500 (Wall Street - USD)
   (ACCIONES_TECH || []).forEach(ticker => {
     const t = ticker.toUpperCase();
     if (!mapa.has(t)) {
@@ -100,19 +119,21 @@ const CATALOGO_UNIFICADO_BASE = (() => {
     }
   });
 
-  // 3. ETFs Estratégicos (Dividendos y Cobertura)
+  // 4. ETFs Estratégicos (Dividendos y Cobertura - Wall Street USD)
   (ETFS_ESTRATEGICOS || []).forEach(ticker => {
     const t = ticker.toUpperCase();
-    mapa.set(t, {
-      ticker: t,
-      nombre: `${t} - Strategic Dividend ETF`,
-      categoria: 'ETFs',
-      tipoMercado: 'tradfi',
-      moneda: 'USD'
-    });
+    if (!mapa.has(t)) {
+      mapa.set(t, {
+        ticker: t,
+        nombre: `${t} - Strategic Dividend ETF (EE.UU.)`,
+        categoria: 'ETFs',
+        tipoMercado: 'tradfi',
+        moneda: 'USD'
+      });
+    }
   });
 
-  // 4. Índices Financieros Globales
+  // 5. Índices Financieros Globales
   (INDICES_GLOBALES || []).forEach(ticker => {
     const t = ticker.toUpperCase();
     if (!mapa.has(t)) {
@@ -126,28 +147,30 @@ const CATALOGO_UNIFICADO_BASE = (() => {
     }
   });
 
-  // 5. Renta Fija & Bonos Soberanos / Treasuries
+  // 6. Renta Fija & Bonos Soberanos / Treasuries
   (BONOS_TICKERS || []).forEach(ticker => {
     const t = ticker.toUpperCase();
-    mapa.set(t, {
-      ticker: t,
-      nombre: t.includes('30') || t.includes('29') || t.includes('35') || t.includes('38')
-        ? `Bono Soberano ${t}`
-        : `Treasury / Bond ETF ${t}`,
-      categoria: 'Bonos',
-      tipoMercado: 'bonos',
-      moneda: t.endsWith('.BA') ? 'ARS' : 'USD'
-    });
+    if (!mapa.has(t)) {
+      mapa.set(t, {
+        ticker: t,
+        nombre: t.includes('30') || t.includes('29') || t.includes('35') || t.includes('38')
+          ? `Bono Soberano ${t}`
+          : `Treasury / Bond ETF ${t}`,
+        categoria: 'Bonos',
+        tipoMercado: 'bonos',
+        moneda: t.endsWith('.BA') ? 'ARS' : 'USD'
+      });
+    }
   });
 
-  // 6. Mercado Argentino BYMA y CEDEARs
+  // 7. Acciones Líderes BYMA (Mercado Argentino)
   (TRADFI_ARG_BONOS || []).forEach(ticker => {
     const t = ticker.toUpperCase();
     if (!mapa.has(t)) {
       mapa.set(t, {
         ticker: t,
         nombre: t.endsWith('.BA') ? `Acción BYMA ${t}` : `Cedear / ADR ${t}`,
-        categoria: t.includes('30') || t.includes('29') ? 'Bonos' : 'Acciones',
+        categoria: t.endsWith('.BA') ? 'CEDEARs' : 'Acciones',
         tipoMercado: 'tradfi',
         moneda: t.endsWith('.BA') ? 'ARS' : 'USD'
       });
@@ -157,7 +180,7 @@ const CATALOGO_UNIFICADO_BASE = (() => {
   return Array.from(mapa.values());
 })();
 
-// Datos semilla de contingencia institucional en caso de tabla remota no inicializada
+// Datos semilla de contingencia institucional (con soporte explícito de CEDEARs .BA en ARS)
 const CARTERA_SEMILLA = [
   {
     id: 1,
@@ -179,25 +202,25 @@ const CARTERA_SEMILLA = [
   },
   {
     id: 3,
-    ticker: 'VIG',
+    ticker: 'VIG.BA', // CEDEAR local cotizado en BYMA en pesos con CCL implícito
     tipo_mercado: 'tradfi',
     cantidad: 11,
-    precio_compra_promedio: 80.0,
-    moneda: 'USD',
+    precio_compra_promedio: 10180.0,
+    moneda: 'ARS',
     fecha_ingreso: '2026-10-10T14:00:00Z'
   },
   {
     id: 4,
-    ticker: 'SPY',
+    ticker: 'SPY.BA', // CEDEAR S&P 500 en BYMA
     tipo_mercado: 'tradfi',
     cantidad: 18,
-    precio_compra_promedio: 745.5,
-    moneda: 'USD',
+    precio_compra_promedio: 20850.0,
+    moneda: 'ARS',
     fecha_ingreso: '2026-09-15T18:00:00Z'
   },
   {
     id: 5,
-    ticker: 'NVDA',
+    ticker: 'NVDA', // Acción directa en Wall Street (USD)
     tipo_mercado: 'tradfi',
     cantidad: 35,
     precio_compra_promedio: 208.2,
@@ -257,7 +280,21 @@ export default function Portfolio() {
                         localStorage.getItem('condorfi_cartera_activa');
       if (guardadas) {
         const parsed = JSON.parse(guardadas);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          // Migración suave: Si la cartera guardada contiene 'VIG' ingresado como CEDEAR en pesos (< $1.000 o marcado en ARS)
+          // se migra automáticamente a 'VIG.BA' para corregir la sobrevaloración del ticker de EE.UU.
+          return parsed.map(p => {
+            if (p.ticker === 'VIG' && (p.precio_compra_promedio === 80 || p.moneda === 'ARS')) {
+              return {
+                ...p,
+                ticker: 'VIG.BA',
+                precio_compra_promedio: p.precio_compra_promedio === 80 ? 10180 : p.precio_compra_promedio,
+                moneda: 'ARS'
+              };
+            }
+            return p;
+          });
+        }
       }
     } catch {}
     return CARTERA_SEMILLA;
@@ -274,13 +311,13 @@ export default function Portfolio() {
   const [ultimaCapturaEnVivo, setUltimaCapturaEnVivo] = useState(null);
 
   // Formulario de nueva posición y Autocomplete Combobox
-  const [nuevoTicker, setNuevoTicker] = useState('BTC');
-  const [busquedaTicker, setBusquedaTicker] = useState('BTC');
+  const [nuevoTicker, setNuevoTicker] = useState('VIG.BA');
+  const [busquedaTicker, setBusquedaTicker] = useState('VIG.BA');
   const [dropdownAbierto, setDropdownAbierto] = useState(false);
   const [nuevaCantidad, setNuevaCantidad] = useState('');
   const [nuevoPrecioCompra, setNuevoPrecioCompra] = useState('');
   const [nuevaMoneda, setNuevaMoneda] = useState('ARS');
-  const [nuevoTipoMercado, setNuevoTipoMercado] = useState('cripto');
+  const [nuevoTipoMercado, setNuevoTipoMercado] = useState('tradfi');
   const [mensajeExito, setMensajeExito] = useState(null);
   const comboboxRef = useRef(null);
 
@@ -301,6 +338,7 @@ export default function Portfolio() {
    * Sincronización en Vivo de Cotizaciones Reales para la Cartera
    * Realiza una consulta directa a /api/scrapper-tradfi (Yahoo Finance) y CriptoYa
    * para obtener los precios actuales de todos los activos guardados.
+   * Maneja tanto tickers .BA (en ARS) como tickers de Wall Street (en USD).
    */
   const sincronizarPreciosEnVivo = useCallback(async () => {
     if (!posiciones || posiciones.length === 0) return;
@@ -314,7 +352,7 @@ export default function Portfolio() {
     setCargandoPreciosVivo(true);
 
     try {
-      // 1. Extraer activos TradFi (Wall Street, ETFs, Bonos, BYMA)
+      // 1. Extraer activos TradFi (Wall Street, CEDEARs .BA, Bonos, BYMA)
       const tickersTradFi = tickersUnicos.filter(t => !['BTC', 'ETH', 'SOL', 'USDT', 'BNB', 'XRP', 'LTC', 'ADA', 'DOGE'].includes(t));
       if (tickersTradFi.length > 0) {
         try {
@@ -330,10 +368,11 @@ export default function Portfolio() {
                   const pActual = Number(item.precio_actual ?? item.precioActual ?? 0);
                   const pApertura = Number(item.precio_apertura ?? item.precioApertura ?? pActual);
                   if (sym && pActual > 0) {
+                    const esBA = sym.endsWith('.BA') || sym === '^MERV';
                     copia[sym] = {
                       precio_actual: pActual,
                       precio_apertura: pApertura,
-                      moneda: item.moneda || 'USD',
+                      moneda: esBA ? 'ARS' : (item.moneda || 'USD'),
                       variacion24h: item.variacion24h ?? (pApertura > 0 ? ((pActual - pApertura) / pApertura) * 100 : 0),
                       timestamp: new Date().toISOString()
                     };
@@ -401,12 +440,13 @@ export default function Portfolio() {
       const t = (item.activo || item.ticker || '').toUpperCase();
       if (t) {
         const previo = mapa.get(t);
+        const esBA = t.endsWith('.BA') || t === '^MERV';
         mapa.set(t, {
           ticker: t,
           nombre: item.nombre || previo?.nombre || t,
-          categoria: previo?.categoria || (item.tipoMercado === 'cripto' ? 'Criptomonedas' : 'Acciones'),
+          categoria: previo?.categoria || (esBA ? 'CEDEARs' : (item.tipoMercado === 'cripto' ? 'Criptomonedas' : 'Acciones')),
           tipoMercado: item.tipoMercado || previo?.tipoMercado || 'tradfi',
-          moneda: item.moneda || previo?.moneda || 'USD',
+          moneda: esBA ? 'ARS' : (item.moneda || previo?.moneda || 'USD'),
           precioActual: item.precioActual || null
         });
       }
@@ -415,11 +455,12 @@ export default function Portfolio() {
     // 3. Enriquecer con cotizaciones remotas en vivo recientes
     Object.entries(preciosEnVivo).forEach(([sym, datos]) => {
       const previo = mapa.get(sym);
+      const esBA = sym.endsWith('.BA') || sym === '^MERV';
       if (previo && datos.precio_actual > 0) {
         mapa.set(sym, {
           ...previo,
           precioActual: datos.precio_actual,
-          moneda: datos.moneda || previo.moneda
+          moneda: esBA ? 'ARS' : (datos.moneda || previo.moneda)
         });
       }
     });
@@ -427,26 +468,50 @@ export default function Portfolio() {
     return Array.from(mapa.values());
   }, [datosScreener, preciosEnVivo]);
 
-  // Filtrado en tiempo real sin límites arbitrarios (sin .slice())
+  // Filtrado en tiempo real sin límites arbitrarios con soporte dinámico para tickers .BA
   const opcionesFiltradas = useMemo(() => {
-    const q = (busquedaTicker || '').trim().toLowerCase();
-    if (!q) {
-      return catalogoCombinado;
+    const q = (busquedaTicker || '').trim().toUpperCase();
+    let lista = [...catalogoCombinado];
+
+    // Soporte de Tickers Locales Dinámicos:
+    // Si el usuario escribe un símbolo que no está en el catálogo predeterminado,
+    // pero termina en .BA o es un ticker válido, se inyecta como opción inmediata.
+    if (q) {
+      const existeExacto = lista.some(item => item.ticker.toUpperCase() === q);
+      if (!existeExacto) {
+        const esBA = q.endsWith('.BA');
+        const sugerido = {
+          ticker: q,
+          nombre: esBA ? `CEDEAR / Instrumento BYMA ${q}` : `Instrumento Personalizado ${q}`,
+          categoria: esBA ? 'CEDEARs' : 'Acciones',
+          tipoMercado: 'tradfi',
+          moneda: esBA ? 'ARS' : 'USD'
+        };
+        lista.unshift(sugerido);
+      }
     }
-    return catalogoCombinado.filter(item => {
-      const matchTicker = (item.ticker || '').toLowerCase().includes(q);
-      const matchNombre = (item.nombre || '').toLowerCase().includes(q);
-      const matchCat = (item.categoria || '').toLowerCase().includes(q);
+
+    if (!q) {
+      return lista;
+    }
+
+    const qLower = q.toLowerCase();
+    return lista.filter(item => {
+      const matchTicker = (item.ticker || '').toLowerCase().includes(qLower);
+      const matchNombre = (item.nombre || '').toLowerCase().includes(qLower);
+      const matchCat = (item.categoria || '').toLowerCase().includes(qLower);
       return matchTicker || matchNombre || matchCat;
     });
   }, [catalogoCombinado, busquedaTicker]);
 
   // Manejador al seleccionar un elemento del combobox
   const handleSeleccionarActivo = (item) => {
-    setNuevoTicker(item.ticker);
-    setBusquedaTicker(item.ticker);
-    const monedaEstimada = determinarMonedaNativa(item.ticker, item.tipoMercado, item.moneda);
-    setNuevaMoneda(monedaEstimada);
+    const tUpper = item.ticker.toUpperCase().trim();
+    const esBA = tUpper.endsWith('.BA') || tUpper === '^MERV';
+
+    setNuevoTicker(tUpper);
+    setBusquedaTicker(tUpper);
+    setNuevaMoneda(esBA ? 'ARS' : determinarMonedaNativa(tUpper, item.tipoMercado, item.moneda));
     setNuevoTipoMercado(item.tipoMercado || 'tradfi');
     if (item.precioActual) {
       setNuevoPrecioCompra(String(item.precioActual));
@@ -486,10 +551,17 @@ export default function Portfolio() {
 
   // Sincronizar precio sugerido al cambiar de ticker en el modal
   useEffect(() => {
-    const itemScreener = catalogoCombinado.find(d => d.ticker.toUpperCase() === nuevoTicker.toUpperCase());
+    const tUpper = nuevoTicker.toUpperCase().trim();
+    const esBA = tUpper.endsWith('.BA') || tUpper === '^MERV';
+    const itemScreener = catalogoCombinado.find(d => d.ticker.toUpperCase() === tUpper);
+
+    if (esBA) {
+      setNuevaMoneda('ARS');
+    }
+
     if (itemScreener) {
       setNuevoTipoMercado(itemScreener.tipoMercado || 'tradfi');
-      setNuevaMoneda(determinarMonedaNativa(itemScreener.ticker, itemScreener.tipoMercado, itemScreener.moneda));
+      setNuevaMoneda(esBA ? 'ARS' : determinarMonedaNativa(itemScreener.ticker, itemScreener.tipoMercado, itemScreener.moneda));
       if (itemScreener.precioActual && !nuevoPrecioCompra) {
         setNuevoPrecioCompra(String(itemScreener.precioActual));
       }
@@ -498,7 +570,7 @@ export default function Portfolio() {
 
   /**
    * =========================================================================
-   * CÁLCULO CUANTITATIVO CON MULTIPLICADOR FX Y COTIZACIONES EN VIVO
+   * CÁLCULO CUANTITATIVO CON LÓGICA CONDICIONAL DE FX PARA ACTIVOS .BA
    * =========================================================================
    */
   const posicionesConMetricas = useMemo(() => {
@@ -507,10 +579,14 @@ export default function Portfolio() {
       const screenerMatch = datosScreener.find(d => (d.activo || d.ticker || '').toUpperCase() === tickerClean);
       const enVivoMatch = preciosEnVivo[tickerClean];
 
-      // 1. Determinación de la moneda nativa estricta (VIG, SPY, etc. son SIEMPRE USD)
-      const monedaNativa = determinarMonedaNativa(tickerClean, pos.tipo_mercado, pos.moneda);
+      // 1. Verificación de activo local BYMA / CEDEAR (.BA o ^MERV)
+      const esActivoBYMA = tickerClean.endsWith('.BA') || tickerClean === '^MERV';
+
+      // 2. Determinación de la moneda nativa estricta:
+      // Si termina en .BA, el activo es NATIVO en Pesos Argentinos (ARS)
+      const monedaNativa = esActivoBYMA ? 'ARS' : determinarMonedaNativa(tickerClean, pos.tipo_mercado, pos.moneda);
       
-      // 2. Precio actual en vivo: prioridad máxima a la cotización fresca remota
+      // 3. Precio actual en vivo: prioridad máxima a la cotización fresca remota
       let precioActual = Number(pos.precio_compra_promedio);
       let esPrecioEnVivo = false;
 
@@ -525,34 +601,84 @@ export default function Portfolio() {
       const precioCompra = Number(pos.precio_compra_promedio);
       const cantidad = Number(pos.cantidad);
 
-      // 3. Métricas en moneda nativa
+      // 4. Métricas en moneda nativa
       const costoTotalNativo = cantidad * precioCompra;
       const valorMercadoNativo = cantidad * precioActual;
       const pnlNominalNativo = valorMercadoNativo - costoTotalNativo;
       const pnlPct = precioCompra > 0 ? ((precioActual - precioCompra) / precioCompra) * 100 : 0;
 
-      // 4. Multiplicador FX Obligatorio hacia monedaGlobal ('ARS' o 'USD'):
-      //    Si monedaGlobal es 'ARS' y activo es USD: valorConvertido = valorMercadoNativo * tasaCambio
-      //    Si monedaGlobal es 'USD' y activo es ARS: valorConvertido = valorMercadoNativo / tasaCambio
-      const costoConvertido = convertirValorFX(costoTotalNativo, monedaNativa, monedaGlobal, tasaCambio);
-      const valorConvertido = convertirValorFX(valorMercadoNativo, monedaNativa, monedaGlobal, tasaCambio);
-      const pnlNominalConvertido = valorConvertido - costoConvertido;
+      // 5. LÓGICA CONDICIONAL DE FX OBLIGATORIA:
+      // Regla 1: Si un activo termina en .BA (ej. VIG.BA, SPY.BA, GGAL.BA):
+      //    El precio que devuelve la API ya se encuentra en pesos argentinos (ARS)
+      //    e incluye el tipo de cambio CCL implícito.
+      //    * En vista 'ARS': OMITIR el multiplicador de FX y utilizar el precio directo en pesos.
+      //    * En vista 'USD': Dividir por la tasa de cambio en vivo para reflejar el valor en divisa dura.
+      // Regla 2: Si un activo NO termina en .BA y es de Wall Street (USD):
+      //    * En vista 'ARS': Multiplicar por la tasa de cambio en vivo (USD * FX).
+      //    * En vista 'USD': Utilizar el precio directo en dólares.
+      let costoConvertido;
+      let valorConvertido;
+      let precioActualConvertido;
+      let precioCompraConvertido;
 
-      // Precios unitarios convertidos a la moneda global para visualización
-      const precioActualConvertido = convertirValorFX(precioActual, monedaNativa, monedaGlobal, tasaCambio);
-      const precioCompraConvertido = convertirValorFX(precioCompra, monedaNativa, monedaGlobal, tasaCambio);
+      const fx = tasaCambio > 0 ? tasaCambio : 1640;
+
+      if (esActivoBYMA) {
+        if (monedaGlobal === 'ARS') {
+          // OMITIR MULTIPLICADOR FX: PRECIO DIRECTO EN ARS (CCL IMPLÍCITO)
+          costoConvertido = costoTotalNativo;
+          valorConvertido = valorMercadoNativo;
+          precioActualConvertido = precioActual;
+          precioCompraConvertido = precioCompra;
+        } else {
+          // Vista en USD: Descontar el tipo de cambio
+          costoConvertido = costoTotalNativo / fx;
+          valorConvertido = valorMercadoNativo / fx;
+          precioActualConvertido = precioActual / fx;
+          precioCompraConvertido = precioCompra / fx;
+        }
+      } else if (monedaNativa === 'USD') {
+        // Instrumento de Wall Street en dólares estadounidenses
+        if (monedaGlobal === 'ARS') {
+          costoConvertido = costoTotalNativo * fx;
+          valorConvertido = valorMercadoNativo * fx;
+          precioActualConvertido = precioActual * fx;
+          precioCompraConvertido = precioCompra * fx;
+        } else {
+          costoConvertido = costoTotalNativo;
+          valorConvertido = valorMercadoNativo;
+          precioActualConvertido = precioActual;
+          precioCompraConvertido = precioCompra;
+        }
+      } else {
+        // Criptomonedas u otros instrumentos en ARS
+        if (monedaGlobal === 'ARS') {
+          costoConvertido = costoTotalNativo;
+          valorConvertido = valorMercadoNativo;
+          precioActualConvertido = precioActual;
+          precioCompraConvertido = precioCompra;
+        } else {
+          costoConvertido = costoTotalNativo / fx;
+          valorConvertido = valorMercadoNativo / fx;
+          precioActualConvertido = precioActual / fx;
+          precioCompraConvertido = precioCompra / fx;
+        }
+      }
+
+      const pnlNominalConvertido = valorConvertido - costoConvertido;
 
       return {
         ...pos,
         tickerClean,
-        nombre: screenerMatch?.nombre || pos.ticker,
-        mercado: screenerMatch?.mercado || pos.tipo_mercado,
-        tipoMercado: screenerMatch?.tipoMercado || pos.tipo_mercado || 'tradfi',
+        nombre: screenerMatch?.nombre || NOMBRES_CEDEARS?.[tickerClean] || pos.ticker,
+        mercado: esActivoBYMA ? 'BYMA (CCL Implícito)' : (screenerMatch?.mercado || pos.tipo_mercado),
+        tipoMercado: esActivoBYMA ? 'cedears' : (screenerMatch?.tipoMercado || pos.tipo_mercado || 'tradfi'),
         condorScore: screenerMatch?.condorScore ?? null,
         dictamen: screenerMatch?.dictamen ?? 'HOLD',
         alineacionTemporal: screenerMatch?.alineacion_temporal ?? 'NEUTRAL',
         variacion24h: enVivoMatch?.variacion24h ?? screenerMatch?.variacion24h ?? 0,
         monedaNativa,
+        esActivoBYMA,
         cantidad,
         precioCompra,
         precioActual,
@@ -617,7 +743,10 @@ export default function Portfolio() {
     return posicionesConPonderacion.filter(p => {
       const matchTexto = p.ticker.toLowerCase().includes(filtroBusqueda.toLowerCase()) ||
         p.nombre.toLowerCase().includes(filtroBusqueda.toLowerCase());
-      const matchMercado = filtroMercado === 'todos' || p.tipoMercado === filtroMercado;
+      const matchMercado = filtroMercado === 'todos' ||
+        (filtroMercado === 'cripto' && p.tipoMercado === 'cripto') ||
+        (filtroMercado === 'cedears' && p.esActivoBYMA) ||
+        (filtroMercado === 'tradfi' && p.tipoMercado !== 'cripto');
       return matchTexto && matchMercado;
     });
   }, [posicionesConPonderacion, filtroBusqueda, filtroMercado]);
@@ -645,7 +774,8 @@ export default function Portfolio() {
     }
 
     const tUpper = nuevoTicker.toUpperCase().trim();
-    const monedaFinal = determinarMonedaNativa(tUpper, nuevoTipoMercado, nuevaMoneda);
+    const esBA = tUpper.endsWith('.BA') || tUpper === '^MERV';
+    const monedaFinal = esBA ? 'ARS' : determinarMonedaNativa(tUpper, nuevoTipoMercado, nuevaMoneda);
 
     const nueva = {
       user_id: user?.id || null,
@@ -682,7 +812,7 @@ export default function Portfolio() {
       localStorage.setItem(storageKey, JSON.stringify(actualizadas));
     } catch {}
 
-    setMensajeExito(`Posición ${nueva.ticker} (${monedaFinal}) añadida exitosamente.`);
+    setMensajeExito(`Posición ${nueva.ticker} (${monedaFinal}) registrada exitosamente en cartera.`);
     setTimeout(() => setMensajeExito(null), 3500);
     setModalAbierto(false);
     setNuevaCantidad('');
@@ -733,7 +863,7 @@ export default function Portfolio() {
               </span>
             </div>
             <p className="text-xs text-slate-500 font-sans mt-0.5">
-              Valuación cruzada en tiempo real: Paridad FX ${tasaCambio.toLocaleString('es-AR', { maximumFractionDigits: 1 })} ARS/USD ({fuenteTasa})
+              Soporte nativo para CEDEARs (.BA con CCL implícito) y Wall Street. Paridad FX ${tasaCambio.toLocaleString('es-AR', { maximumFractionDigits: 1 })} ARS/USD ({fuenteTasa})
               {ultimaCapturaEnVivo && ` • Feed ${ultimaCapturaEnVivo}`}
             </p>
           </div>
@@ -762,7 +892,7 @@ export default function Portfolio() {
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-mono font-bold text-white bg-orange-600 hover:bg-orange-700 shadow-sm transition active:scale-95 cursor-pointer"
           >
             <PlusCircle className="w-4 h-4" />
-            <span>Registrar Compra</span>
+            <span>Registrar Posición</span>
           </button>
         </div>
       </div>
@@ -889,7 +1019,7 @@ export default function Portfolio() {
           3. DISTRIBUCIÓN DE ACTIVOS & ASIGNACIÓN DE CARTERA
       ========================================================================== */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Barra de Distribución Cripto vs TradFi */}
+        {/* Barra de Diversificación */}
         <div className="lg:col-span-1 bg-white p-5 rounded-2xl border border-slate-200 shadow-xs flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between mb-3">
@@ -931,7 +1061,7 @@ export default function Portfolio() {
               <div className="flex items-center justify-between p-2 rounded-xl bg-blue-50/60 border border-blue-100">
                 <div className="flex items-center gap-2">
                   <span className="w-2.5 h-2.5 rounded-full bg-blue-600"></span>
-                  <span className="font-semibold text-slate-800">TradFi (Wall Street & BYMA)</span>
+                  <span className="font-semibold text-slate-800">TradFi (BYMA / CEDEARs & Wall St.)</span>
                 </div>
                 <div className="text-right">
                   <span className="font-bold text-slate-900">
@@ -944,7 +1074,7 @@ export default function Portfolio() {
           </div>
 
           <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-[11px] font-mono text-slate-500">
-            <span>Tasa FX Aplicada:</span>
+            <span>Tasa FX Dólar Cripto:</span>
             <strong className="text-slate-800">${tasaCambio.toLocaleString('es-AR')} ARS/USD</strong>
           </div>
         </div>
@@ -996,7 +1126,7 @@ export default function Portfolio() {
       </div>
 
       {/* =========================================================================
-          4. TABLA DE POSICIONES ACTIVAS (DATAGRID INSTITUCIONAL)
+          4. TABLA DE POSICIONES ACTIVAS (DATAGRID CON DISTINCIÓN BYMA / CEDEARS)
       ========================================================================== */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
         {/* Controles de Filtro de la Tabla */}
@@ -1008,7 +1138,7 @@ export default function Portfolio() {
                 type="text"
                 value={filtroBusqueda}
                 onChange={e => setFiltroBusqueda(e.target.value)}
-                placeholder="Buscar por ticker o nombre..."
+                placeholder="Buscar por ticker o nombre (ej. VIG.BA)..."
                 className="w-full pl-9 pr-3 py-1.5 rounded-xl border border-slate-200 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 transition"
               />
             </div>
@@ -1021,6 +1151,15 @@ export default function Portfolio() {
                 }`}
               >
                 Todos
+              </button>
+              <button
+                type="button"
+                onClick={() => setFiltroMercado('cedears')}
+                className={`px-2.5 py-1 rounded-lg transition cursor-pointer ${
+                  filtroMercado === 'cedears' ? 'bg-white font-bold text-slate-900 shadow-2xs' : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                CEDEARs (.BA)
               </button>
               <button
                 type="button"
@@ -1090,23 +1229,38 @@ export default function Portfolio() {
                           <div className={`w-8 h-8 rounded-lg flex items-center justify-center font-bold text-xs shrink-0 ${
                             pos.tipoMercado === 'cripto'
                               ? 'bg-amber-500/10 text-amber-700 border border-amber-500/20'
+                              : pos.esActivoBYMA
+                              ? 'bg-emerald-500/10 text-emerald-700 border border-emerald-500/20'
                               : 'bg-blue-500/10 text-blue-700 border border-blue-500/20'
                           }`}>
-                            {pos.tipoMercado === 'cripto' ? <Coins className="w-4 h-4" /> : <Building2 className="w-4 h-4" />}
+                            {pos.tipoMercado === 'cripto' ? (
+                              <Coins className="w-4 h-4" />
+                            ) : (
+                              <Building2 className="w-4 h-4" />
+                            )}
                           </div>
                           <div>
                             <div className="flex items-center gap-1.5">
                               <span className="font-bold text-slate-900">{pos.ticker}</span>
-                              <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-100 text-slate-600 border border-slate-200">
-                                {pos.monedaNativa}
+                              <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded border ${
+                                pos.esActivoBYMA
+                                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                  : 'bg-slate-100 text-slate-600 border border-slate-200'
+                              }`}>
+                                {pos.esActivoBYMA ? 'CEDEAR ARS' : pos.monedaNativa}
                               </span>
                               {pos.esPrecioEnVivo && (
                                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" title="Cotización remota en vivo" />
                               )}
                             </div>
-                            <span className="text-[11px] text-slate-500 font-sans block truncate max-w-[140px]">
+                            <span className="text-[11px] text-slate-500 font-sans block truncate max-w-[150px]" title={pos.nombre}>
                               {pos.nombre}
                             </span>
+                            {pos.esActivoBYMA && (
+                              <span className="text-[9px] text-emerald-600 font-mono block">
+                                CCL implícito • Sin FX mult.
+                              </span>
+                            )}
                           </div>
                         </div>
                       </td>
@@ -1232,7 +1386,7 @@ export default function Portfolio() {
       </div>
 
       {/* =========================================================================
-          5. MODAL INTERACTIVO: REGISTRAR NUEVA POSICIÓN
+          5. MODAL INTERACTIVO: REGISTRAR NUEVA POSICIÓN CON SOPORTE .BA
       ========================================================================== */}
       {modalAbierto && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
@@ -1274,13 +1428,16 @@ export default function Portfolio() {
                     required
                     value={busquedaTicker}
                     onChange={(e) => {
-                      const val = e.target.value;
+                      const val = e.target.value.toUpperCase();
                       setBusquedaTicker(val);
-                      setNuevoTicker(val.toUpperCase().trim());
+                      setNuevoTicker(val.trim());
+                      if (val.trim().endsWith('.BA')) {
+                        setNuevaMoneda('ARS');
+                      }
                       setDropdownAbierto(true);
                     }}
                     onFocus={() => setDropdownAbierto(true)}
-                    placeholder="Buscar por ticker o nombre (ej. VIG, NVDA, BTC, AL30)..."
+                    placeholder="Buscar (ej. VIG.BA, SPY.BA, NVDA, AL30.BA)..."
                     className="w-full pl-9 pr-10 py-2.5 rounded-xl border border-slate-200 bg-white font-mono text-xs focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 focus:outline-none uppercase"
                   />
                   <button
@@ -1292,12 +1449,13 @@ export default function Portfolio() {
                   </button>
                 </div>
 
-                {/* Dropdown Flotante con scroll natural (Sin límites arbitrarios / Sin .slice()) */}
+                {/* Dropdown Flotante con scroll natural */}
                 {dropdownAbierto && (
                   <div className="absolute left-0 right-0 top-full mt-1.5 bg-white border border-slate-200 rounded-xl shadow-2xl max-h-60 overflow-y-auto z-50 divide-y divide-slate-100 animate-in fade-in zoom-in-95 duration-100">
                     {opcionesFiltradas.length > 0 ? (
                       opcionesFiltradas.map((item) => {
                         const esSeleccionado = nuevoTicker.toUpperCase() === item.ticker.toUpperCase();
+                        const esBA = item.ticker.toUpperCase().endsWith('.BA');
                         return (
                           <div
                             key={item.ticker}
@@ -1310,7 +1468,11 @@ export default function Portfolio() {
                             }`}
                           >
                             <div className="flex items-center gap-2.5 min-w-0">
-                              <span className="font-mono font-bold text-xs text-slate-900 px-2 py-0.5 rounded bg-slate-100 border border-slate-200 shrink-0">
+                              <span className={`font-mono font-bold text-xs px-2 py-0.5 rounded border shrink-0 ${
+                                esBA
+                                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                  : 'bg-slate-100 text-slate-900 border-slate-200'
+                              }`}>
                                 {item.ticker}
                               </span>
                               <div className="truncate min-w-0">
@@ -1318,7 +1480,7 @@ export default function Portfolio() {
                                   {item.nombre}
                                 </p>
                                 <p className="text-[10px] text-slate-400 font-mono">
-                                  {item.categoria} &bull; {item.moneda}
+                                  {item.categoria} &bull; {esBA ? 'ARS (CCL Implícito)' : item.moneda}
                                 </p>
                               </div>
                             </div>
@@ -1326,21 +1488,21 @@ export default function Portfolio() {
                             <div className="text-right shrink-0 ml-2">
                               {item.precioActual ? (
                                 <span className="font-mono text-xs font-bold text-slate-900 block">
-                                  {formatearMonto(item.precioActual, item.moneda || 'USD')}
+                                  {formatearMonto(item.precioActual, esBA ? 'ARS' : (item.moneda || 'USD'))}
                                 </span>
                               ) : null}
                               <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded font-bold ${
-                                item.categoria === 'Criptomonedas'
+                                esBA
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : item.categoria === 'Criptomonedas'
                                   ? 'bg-orange-100 text-orange-700'
                                   : item.categoria === 'Acciones'
                                   ? 'bg-blue-100 text-blue-700'
                                   : item.categoria === 'ETFs'
-                                  ? 'bg-emerald-100 text-emerald-700'
-                                  : item.categoria === 'Índices'
                                   ? 'bg-purple-100 text-purple-700'
                                   : 'bg-amber-100 text-amber-700'
                               }`}>
-                                {item.categoria}
+                                {esBA ? 'BYMA / CEDEAR' : item.categoria}
                               </span>
                             </div>
                           </div>
@@ -1354,6 +1516,20 @@ export default function Portfolio() {
                   </div>
                 )}
               </div>
+
+              {/* Banner dinámico de confirmación de CEDEAR */}
+              {nuevoTicker.toUpperCase().endsWith('.BA') && (
+                <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl flex items-start gap-2 text-emerald-800 text-[11px] font-sans">
+                  <Info className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                  <div>
+                    <strong className="font-mono font-bold">Instrumento BYMA (.BA) Detectado:</strong>
+                    <p className="mt-0.5">
+                      Cotiza directamente en pesos argentinos (ARS) con el tipo de cambio CCL ya implícito en el precio.
+                      Se omitirá el multiplicador del Dólar Cripto.
+                    </p>
+                  </div>
+                </div>
+              )}
 
               {/* Cantidad y Moneda */}
               <div className="grid grid-cols-2 gap-3">
@@ -1378,10 +1554,11 @@ export default function Portfolio() {
                   <select
                     value={nuevaMoneda}
                     onChange={e => setNuevaMoneda(e.target.value)}
-                    className="w-full p-2.5 rounded-xl border border-slate-200 bg-white font-mono text-xs focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 focus:outline-none"
+                    disabled={nuevoTicker.toUpperCase().endsWith('.BA')}
+                    className="w-full p-2.5 rounded-xl border border-slate-200 bg-white font-mono text-xs focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 focus:outline-none disabled:bg-slate-100 disabled:text-slate-500"
                   >
-                    <option value="USD">USD (Dólares)</option>
                     <option value="ARS">ARS (Pesos)</option>
+                    <option value="USD">USD (Dólares)</option>
                   </select>
                 </div>
               </div>
@@ -1395,7 +1572,7 @@ export default function Portfolio() {
                   type="number"
                   step="any"
                   required
-                  placeholder="ej. 80.00"
+                  placeholder={nuevoTicker.toUpperCase().endsWith('.BA') ? "ej. 10270.00 ARS" : "ej. 243.00 USD"}
                   value={nuevoPrecioCompra}
                   onChange={e => setNuevoPrecioCompra(e.target.value)}
                   className="w-full p-2.5 rounded-xl border border-slate-200 font-mono text-xs focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 focus:outline-none"
@@ -1404,10 +1581,10 @@ export default function Portfolio() {
 
               <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-[11px] text-slate-600 font-sans space-y-1">
                 <p>
-                  • Activos de Wall Street (como VIG, SPY, NVDA) se liquidan en USD y se multiplican automáticamente por la tasa de cambio viva (${tasaCambio.toLocaleString('es-AR')} ARS/USD) cuando el visor esté en ARS.
+                  • Si registraste un CEDEAR local (ej. <strong>VIG.BA</strong>), el portafolio toma el precio directo en ARS sin multiplicar por el dólar.
                 </p>
                 <p>
-                  • Todas las cifras se formatean con separador de miles oficial.
+                  • Si registraste la acción en EE.UU. (ej. <strong>VIG</strong>), el sistema aplicará la tasa de cambio viva (${tasaCambio.toLocaleString('es-AR')} ARS) en vista ARS.
                 </p>
               </div>
 

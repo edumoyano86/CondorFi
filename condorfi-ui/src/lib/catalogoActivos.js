@@ -60,9 +60,71 @@ export const ACCIONES_TECH = [
 
 export const TRADFI_GLOBAL = ACCIONES_TECH;
 
+// 4. CEDEARS DE BYMA (MERCADO ARGENTINO - EN PESOS ARS CON CCL IMPLÍCITO)
+export const CEDEARS_BYMA = [
+  'VIG.BA', 'SPY.BA', 'QQQ.BA', 'DIA.BA', 'IWM.BA', 'EEM.BA', 'EWZ.BA', 'ARKK.BA',
+  'AAPL.BA', 'MSFT.BA', 'NVDA.BA', 'AMZN.BA', 'GOOGL.BA', 'META.BA', 'TSLA.BA',
+  'KO.BA', 'MELI.BA', 'MCD.BA', 'DIS.BA', 'WMT.BA', 'JNJ.BA', 'PG.BA', 'XOM.BA',
+  'CVX.BA', 'BABA.BA', 'GLOB.BA', 'VIST.BA', 'PBR.BA', 'VALE.BA', 'AMD.BA',
+  'INTC.BA', 'QCOM.BA', 'CRM.BA', 'ADBE.BA', 'NFLX.BA', 'PYPL.BA', 'COIN.BA',
+  'SHOP.BA', 'UBER.BA', 'ABNB.BA', 'GOLD.BA', 'XLE.BA', 'XLF.BA', 'XLK.BA',
+  'DESP.BA', 'BIOX.BA', 'BBD.BA', 'ITUB.BA', 'MOAT.BA', 'VYM.BA', 'SCHD.BA'
+];
+
+export const NOMBRES_CEDEARS = {
+  'VIG.BA': 'CEDEAR Vanguard Dividend Appreciation',
+  'SPY.BA': 'CEDEAR S&P 500 ETF Trust',
+  'QQQ.BA': 'CEDEAR Invesco NASDAQ 100',
+  'DIA.BA': 'CEDEAR SPDR Dow Jones Industrial',
+  'IWM.BA': 'CEDEAR iShares Russell 2000',
+  'EEM.BA': 'CEDEAR iShares MSCI Emerging Markets',
+  'EWZ.BA': 'CEDEAR iShares MSCI Brazil',
+  'ARKK.BA': 'CEDEAR ARK Innovation ETF',
+  'AAPL.BA': 'CEDEAR Apple Inc.',
+  'MSFT.BA': 'CEDEAR Microsoft Corporation',
+  'NVDA.BA': 'CEDEAR NVIDIA Corporation',
+  'AMZN.BA': 'CEDEAR Amazon.com Inc.',
+  'GOOGL.BA': 'CEDEAR Alphabet Inc. (Google)',
+  'META.BA': 'CEDEAR Meta Platforms Inc.',
+  'TSLA.BA': 'CEDEAR Tesla Inc.',
+  'KO.BA': 'CEDEAR The Coca-Cola Company',
+  'MELI.BA': 'CEDEAR MercadoLibre Inc.',
+  'MCD.BA': "CEDEAR McDonald's Corporation",
+  'DIS.BA': 'CEDEAR The Walt Disney Company',
+  'WMT.BA': 'CEDEAR Walmart Inc.',
+  'JNJ.BA': 'CEDEAR Johnson & Johnson',
+  'PG.BA': 'CEDEAR Procter & Gamble',
+  'XOM.BA': 'CEDEAR ExxonMobil Corporation',
+  'CVX.BA': 'CEDEAR Chevron Corporation',
+  'BABA.BA': 'CEDEAR Alibaba Group',
+  'GLOB.BA': 'CEDEAR Globant S.A.',
+  'VIST.BA': 'CEDEAR Vista Energy S.A.B.',
+  'PBR.BA': 'CEDEAR Petrobras Petróleo Brasileiro',
+  'VALE.BA': 'CEDEAR Vale S.A.',
+  'AMD.BA': 'CEDEAR Advanced Micro Devices',
+  'INTC.BA': 'CEDEAR Intel Corporation',
+  'QCOM.BA': 'CEDEAR Qualcomm Inc.',
+  'CRM.BA': 'CEDEAR Salesforce Inc.',
+  'ADBE.BA': 'CEDEAR Adobe Inc.',
+  'NFLX.BA': 'CEDEAR Netflix Inc.',
+  'PYPL.BA': 'CEDEAR PayPal Holdings',
+  'COIN.BA': 'CEDEAR Coinbase Global',
+  'SHOP.BA': 'CEDEAR Shopify Inc.',
+  'UBER.BA': 'CEDEAR Uber Technologies',
+  'ABNB.BA': 'CEDEAR Airbnb Inc.',
+  'GOLD.BA': 'CEDEAR Barrick Gold Corporation',
+  'XLE.BA': 'CEDEAR Energy Select Sector SPDR',
+  'XLF.BA': 'CEDEAR Financial Select Sector SPDR',
+  'XLK.BA': 'CEDEAR Technology Select Sector SPDR',
+  'SCHD.BA': 'CEDEAR Schwab U.S. Dividend Equity',
+  'MOAT.BA': 'CEDEAR VanEck Morningstar Wide Moat',
+  'VYM.BA': 'CEDEAR Vanguard High Dividend Yield'
+};
+
 export const TRADFI_ARG_BONOS = [
   '^MERV', 'GGAL.BA', 'YPFD.BA', 'PAMP.BA', 'BMA.BA', 'CEPU.BA', 'TXAR.BA', 'ALUA.BA',
   'CRES.BA', 'EDN.BA', 'LOMA.BA', 'MIRG.BA', 'TECO2.BA', 'TGNO4.BA', 'TGSU2.BA', 'TRAN.BA', 'VALO.BA', 'BYMA.BA',
+  ...CEDEARS_BYMA,
   'MELI', 'VIST', 'YPF', 'GLOB', 'BBD', 'ITUB', 'VALE', 'PBR',
   'AL30.BA', 'GD30.BA', 'AL35.BA', 'GD35.BA', 'AE38.BA', 'GD38.BA', 'AL29.BA', 'GD29.BA', 'TLT'
 ];
