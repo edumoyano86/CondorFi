@@ -3,17 +3,20 @@
  * CondorFi - Motor Cuantitativo de Escaneo Técnico MTFA & Alertas RSI
  * Archivo: condorfi-ui/api/cron/scanner.js (Vercel Serverless Function & Cron)
  * 
- * Funcionalidad Institucional:
+ * Funcionalidad Institucional Avanzada:
  * 1. Diseñado para ejecutarse en horario bursátil (lunes a viernes 14:00-19:59 UTC)
  *    mediante GitHub Actions o disparador HTTP autenticado.
  * 2. Extrae todas las posiciones activas registradas en 'cartera_activa' (Supabase).
- * 3. Descarga la serie histórica de precios recientes para calcular el RSI (Relative
- *    Strength Index) clásico de Wilder con período de 14 ruedas.
- * 4. Aplica las Reglas Cuantitativas MTFA:
- *    - SEÑAL DE COMPRA (Sobreventa): RSI < 30
- *    - SEÑAL DE VENTA (Sobrecompra): RSI > 70
- * 5. Despacha alertas instantáneas y estructuradas a Telegram:
- *    Ejemplo: 🦅 ALERTA MTFA: VIG.BA | 🟢 SEÑAL DE COMPRA (Sobreventa RSI: 28) | Precio Actual: $X
+ * 3. Descarga en paralelo la serie histórica en dos temporalidades:
+ *    - Macro Diario (1D): para evaluar la estructura mayor y zonas de soporte/resistencia.
+ *    - Micro Horario (1H): para evaluar el gatillo de momentum intradiario.
+ * 4. Calcula el RSI clásico de Wilder (14 períodos) en ambas temporalidades.
+ * 5. Aplica Confluencia Multi-Timeframe (MTFA):
+ *    - 🟢 SEÑAL DE COMPRA MTFA: RSI 1H < 30 con RSI 1D <= 48 (o RSI 1D < 30).
+ *    - 🔴 SEÑAL DE VENTA MTFA: RSI 1H > 70 con RSI 1D >= 55 (o RSI 1D > 70).
+ * 6. Despacha alertas instantáneas y estructuradas a Telegram.
+ * 7. Persiste automáticamente cada alerta en 'alertas_historial' para alimentar
+ *    el Centro de Notificaciones en la interfaz web de CondorFi.
  * ==============================================================================
  */
 
@@ -94,37 +97,48 @@ export function calcularRSI(precios, periodo = 14) {
 }
 
 /**
- * Obtiene la serie histórica de precios recientes y la cotización actual para un activo.
+ * Obtiene la serie histórica en dos temporalidades (1D y 1H) para análisis MTFA.
  * Soporta activos TradFi (BYMA, CEDEARs, Wall Street) y Cripto (Binance / Yahoo).
  * 
  * @param {string} ticker Símbolo del activo (ej. 'VIG.BA', 'AAPL', 'BTC', 'ETH')
- * @returns {Promise<{ ok: boolean, ticker: string, precios: number[], precioActual: number, moneda: string }>}
+ * @returns {Promise<{ ok: boolean, ticker: string, precios1d: number[], precios1h: number[], precioActual: number, moneda: string }>}
  */
-async function obtenerHistoricoPrecios(ticker) {
+async function obtenerHistoricoPreciosMTFA(ticker) {
   const t = ticker.toUpperCase().trim();
   const esArs = t === '^MERV' || t.endsWith('.BA');
 
-  // 1. Manejo especializado para Criptomonedas (Binance API 1d klines)
+  // 1. Manejo especializado para Criptomonedas (Binance API 1d y 1h klines)
   const criptosPrincipales = ['BTC', 'ETH', 'SOL', 'USDT', 'BNB', 'XRP', 'ADA', 'AVAX', 'DOGE', 'LINK'];
   const esCriptoPura = criptosPrincipales.includes(t) || t.endsWith('USDT') || t.endsWith('USD');
 
   if (esCriptoPura && !t.includes('.')) {
     try {
       const symbolBinance = t.endsWith('USDT') ? t : `${t}USDT`;
-      const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbolBinance}&interval=1d&limit=45`, {
-        headers: { 'Accept': 'application/json' }
-      });
+      const [res1d, res1h] = await Promise.all([
+        fetch(`https://api.binance.com/api/v3/klines?symbol=${symbolBinance}&interval=1d&limit=45`, {
+          headers: { 'Accept': 'application/json' }
+        }),
+        fetch(`https://api.binance.com/api/v3/klines?symbol=${symbolBinance}&interval=1h&limit=50`, {
+          headers: { 'Accept': 'application/json' }
+        })
+      ]);
 
-      if (res.ok) {
-        const klines = await res.json();
-        if (Array.isArray(klines) && klines.length >= 15) {
-          const precios = klines.map(k => parseFloat(k[4])).filter(p => !isNaN(p) && p > 0);
-          const precioActual = precios[precios.length - 1];
+      if (res1d.ok) {
+        const klines1d = await res1d.json();
+        const klines1h = res1h.ok ? await res1h.json() : [];
+
+        if (Array.isArray(klines1d) && klines1d.length >= 15) {
+          const precios1d = klines1d.map(k => parseFloat(k[4])).filter(p => !isNaN(p) && p > 0);
+          const precios1h = Array.isArray(klines1h)
+            ? klines1h.map(k => parseFloat(k[4])).filter(p => !isNaN(p) && p > 0)
+            : precios1d;
+          const precioActual = precios1d[precios1d.length - 1];
 
           return {
             ok: true,
             ticker: t,
-            precios,
+            precios1d,
+            precios1h,
             precioActual,
             moneda: 'USD'
           };
@@ -135,38 +149,52 @@ async function obtenerHistoricoPrecios(ticker) {
     }
   }
 
-  // 2. Consulta TradFi / Acciones / ETFs / CEDEARs / Bonos vía Yahoo Finance
+  // 2. Consulta TradFi / Acciones / ETFs / CEDEARs / Bonos vía Yahoo Finance (Dual 1D + 1H)
   let yahooSymbol = t;
   if (criptosPrincipales.includes(t)) {
     yahooSymbol = `${t}-USD`;
   }
 
   try {
-    const startDate = new Date();
-    // 55 días atrás para asegurar al menos ~35-40 ruedas de negociación activas
-    startDate.setDate(startDate.getDate() - 55);
+    const startDate1d = new Date();
+    startDate1d.setDate(startDate1d.getDate() - 55);
 
-    const chartRes = await yahooFinance.chart(yahooSymbol, {
-      period1: startDate.toISOString().split('T')[0],
-      interval: '1d'
-    });
+    const startDate1h = new Date();
+    startDate1h.setDate(startDate1h.getDate() - 12);
 
-    const quotes = chartRes?.quotes || [];
-    const precios = quotes
+    const [chartRes1d, chartRes1h] = await Promise.all([
+      yahooFinance.chart(yahooSymbol, {
+        period1: startDate1d.toISOString().split('T')[0],
+        interval: '1d'
+      }).catch(() => null),
+      yahooFinance.chart(yahooSymbol, {
+        period1: startDate1h.toISOString().split('T')[0],
+        interval: '1h'
+      }).catch(() => null)
+    ]);
+
+    const quotes1d = chartRes1d?.quotes || [];
+    const precios1d = quotes1d
       .map(q => q.close)
       .filter(p => typeof p === 'number' && !isNaN(p) && p > 0);
 
-    const moneda = (chartRes?.meta?.currency === 'ARS' || esArs) ? 'ARS' : 'USD';
-    const regularPrice = chartRes?.meta?.regularMarketPrice;
+    const quotes1h = chartRes1h?.quotes || [];
+    const precios1h = quotes1h
+      .map(q => q.close)
+      .filter(p => typeof p === 'number' && !isNaN(p) && p > 0);
+
+    const moneda = (chartRes1d?.meta?.currency === 'ARS' || esArs) ? 'ARS' : 'USD';
+    const regularPrice = chartRes1d?.meta?.regularMarketPrice;
     const precioActual = (typeof regularPrice === 'number' && regularPrice > 0)
       ? regularPrice
-      : (precios.length > 0 ? precios[precios.length - 1] : 0);
+      : (precios1d.length > 0 ? precios1d[precios1d.length - 1] : 0);
 
-    if (precios.length >= 15 && precioActual > 0) {
+    if (precios1d.length >= 15 && precioActual > 0) {
       return {
         ok: true,
         ticker: t,
-        precios,
+        precios1d,
+        precios1h: precios1h.length >= 15 ? precios1h : precios1d,
         precioActual,
         moneda
       };
@@ -178,7 +206,8 @@ async function obtenerHistoricoPrecios(ticker) {
   return {
     ok: false,
     ticker: t,
-    precios: [],
+    precios1d: [],
+    precios1h: [],
     precioActual: 0,
     moneda: esArs ? 'ARS' : 'USD'
   };
@@ -224,7 +253,7 @@ export default async function handler(req, res) {
   }
 
   const inicio = performance.now();
-  console.log('[Cron Scanner] Iniciando escaneo técnico MTFA con RSI(14)...');
+  console.log('[Cron Scanner] Iniciando escaneo técnico MTFA con RSI(14) Dual (1D + 1H)...');
 
   const supabase = getSupabaseAdminClient();
   if (!supabase) {
@@ -270,37 +299,41 @@ export default async function handler(req, res) {
     const tickersUnicos = [...new Set(posiciones.map(p => p.ticker.toUpperCase().trim()))];
     const mapaDatosTecnicos = new Map();
 
-    const tamanoLote = 8;
+    const tamanoLote = 6;
     for (let i = 0; i < tickersUnicos.length; i += tamanoLote) {
       const lote = tickersUnicos.slice(i, i + tamanoLote);
       const resultados = await Promise.allSettled(
-        lote.map(t => obtenerHistoricoPrecios(t))
+        lote.map(t => obtenerHistoricoPreciosMTFA(t))
       );
 
       resultados.forEach((resLote) => {
         if (resLote.status === 'fulfilled' && resLote.value.ok) {
           const item = resLote.value;
-          const rsi = calcularRSI(item.precios, 14);
+          const rsi1d = calcularRSI(item.precios1d, 14);
+          const rsi1h = calcularRSI(item.precios1h, 14) || rsi1d;
+
           mapaDatosTecnicos.set(item.ticker, {
             ...item,
-            rsi
+            rsi1d,
+            rsi1h
           });
         }
       });
     }
 
-    // 3. Evaluar Reglas de Disparo MTFA (RSI < 30 y RSI > 70)
+    // 3. Evaluar Reglas de Disparo Cuantitativas MTFA (1D + 1H)
     const alertasADespachar = [];
 
     for (const pos of posiciones) {
       const ticker = pos.ticker.toUpperCase().trim();
       const datosTecnicos = mapaDatosTecnicos.get(ticker);
 
-      if (!datosTecnicos || datosTecnicos.rsi === null || datosTecnicos.rsi === undefined) {
+      if (!datosTecnicos || datosTecnicos.rsi1d === null) {
         continue;
       }
 
-      const rsi = datosTecnicos.rsi;
+      const rsi1d = datosTecnicos.rsi1d;
+      const rsi1h = datosTecnicos.rsi1h ?? rsi1d;
       const precioActual = datosTecnicos.precioActual;
       const moneda = datosTecnicos.moneda || pos.moneda || 'USD';
       const monedaSimbolo = moneda === 'ARS' ? '$' : 'US$';
@@ -313,49 +346,71 @@ export default async function handler(req, res) {
       let textoAlertaResumido = '';
       let mensajeMarkdownCompleto = '';
 
-      // Regla MTFA 1: Sobreventa Extrema (RSI < 30) -> Señal de Compra
-      if (rsi < 30.0) {
+      // Regla MTFA 1: Señal de Compra por Sobreventa y Confluencia
+      // Condición A: Micro horario en sobreventa extrema (< 30) con Macro diario en zona de descuento/soporte (<= 48)
+      // Condición B: Macro diario en sobreventa extrema (< 30)
+      const esSobreventaMicro = rsi1h < 30.0 && rsi1d <= 48.0;
+      const esSobreventaMacro = rsi1d < 30.0;
+
+      if (esSobreventaMicro || esSobreventaMacro) {
         tipoAlerta = 'COMPRA_SOBREVENTA';
-        textoAlertaResumido = `🦅 ALERTA MTFA: ${ticker} | 🟢 SEÑAL DE COMPRA (Sobreventa RSI: ${rsi}) | Precio Actual: ${monedaSimbolo} ${precioStr}`;
+        const justificacion = esSobreventaMacro
+          ? `Sobreventa Estructural Diaria (RSI 1D: ${rsi1d})`
+          : `Gatillo Micro Horario en Sobreventa (RSI 1H: ${rsi1h}) con Soporte Diario (RSI 1D: ${rsi1d})`;
+
+        textoAlertaResumido = `🦅 ALERTA MTFA: ${ticker} | 🟢 SEÑAL DE COMPRA (RSI 1D: ${rsi1d} • 1H: ${rsi1h}) | Precio: ${monedaSimbolo} ${precioStr}`;
 
         mensajeMarkdownCompleto = 
 `🦅 *ALERTA MTFA: ${ticker}*
 ────────────────────────
-🟢 *SEÑAL DE COMPRA (Sobreventa RSI: ${rsi})*
+🟢 *SEÑAL DE COMPRA (Confluencia MTFA)*
 💵 *Precio Actual:* ${monedaSimbolo} ${precioStr}
 
-📊 *Análisis Técnico Cuantitativo:*
-• *Indicador:* RSI (14 períodos de Wilder)
-• *Lectura:* \`${rsi}\` (Zona de Sobreventa extrema < 30)
+📊 *Análisis Multi-Temporal (MTFA 1D + 1H):*
+• *RSI Diario (1D):* \`${rsi1d}\` (${rsi1d < 30 ? 'Sobreventa Mayor' : 'Soporte / Descuento'})
+• *RSI Horario (1H):* \`${rsi1h}\` (${rsi1h < 30 ? 'Gatillo Sobreventa < 30' : 'Momentum neutral'})
+• *Confluencia:* _${justificacion}_
 • *Posición en Cartera:* \`${pos.cantidad}\` nominales
 • *Precio Base de Compra:* ${monedaSimbolo} ${Number(pos.precio_compra_promedio || 0).toLocaleString('es-AR')}
 
-💡 _Interpretación Cuantitativa: Agotamiento vendedor detectado en temporalidad diaria. Evaluar compras tácticas o rebalanceo alcista._
+💡 _Interpretación Cuantitativa: Agotamiento vendedor confirmado en múltiples temporalidades. Oportunidad de entrada táctica o acumulación con stop ceñido._
 
 ────────────────────────
 ⚙️ _CondorFi Quantitative Trading Terminal_`;
       }
-      // Regla MTFA 2: Sobrecompra Extrema (RSI > 70) -> Señal de Venta
-      else if (rsi > 70.0) {
-        tipoAlerta = 'VENTA_SOBRECOMPRA';
-        textoAlertaResumido = `🦅 ALERTA MTFA: ${ticker} | 🔴 SEÑAL DE VENTA (Sobrecompra RSI: ${rsi}) | Precio Actual: ${monedaSimbolo} ${precioStr}`;
+      // Regla MTFA 2: Señal de Venta por Sobrecompra y Confluencia
+      // Condición A: Micro horario en sobrecompra extrema (> 70) con Macro diario extendido (>= 55)
+      // Condición B: Macro diario en sobrecompra extrema (> 70)
+      else {
+        const esSobrecompraMicro = rsi1h > 70.0 && rsi1d >= 55.0;
+        const esSobrecompraMacro = rsi1d > 70.0;
 
-        mensajeMarkdownCompleto = 
+        if (esSobrecompraMicro || esSobrecompraMacro) {
+          tipoAlerta = 'VENTA_SOBRECOMPRA';
+          const justificacion = esSobrecompraMacro
+            ? `Sobrecompra Estructural Diaria (RSI 1D: ${rsi1d})`
+            : `Gatillo Micro Horario en Sobrecompra (RSI 1H: ${rsi1h}) con Macro Extendido (RSI 1D: ${rsi1d})`;
+
+          textoAlertaResumido = `🦅 ALERTA MTFA: ${ticker} | 🔴 SEÑAL DE VENTA (RSI 1D: ${rsi1d} • 1H: ${rsi1h}) | Precio: ${monedaSimbolo} ${precioStr}`;
+
+          mensajeMarkdownCompleto = 
 `🦅 *ALERTA MTFA: ${ticker}*
 ────────────────────────
-🔴 *SEÑAL DE VENTA (Sobrecompra RSI: ${rsi})*
+🔴 *SEÑAL DE VENTA (Confluencia MTFA)*
 💵 *Precio Actual:* ${monedaSimbolo} ${precioStr}
 
-📊 *Análisis Técnico Cuantitativo:*
-• *Indicador:* RSI (14 períodos de Wilder)
-• *Lectura:* \`${rsi}\` (Zona de Sobrecompra extrema > 70)
+📊 *Análisis Multi-Temporal (MTFA 1D + 1H):*
+• *RSI Diario (1D):* \`${rsi1d}\` (${rsi1d > 70 ? 'Sobrecompra Mayor' : 'Tendencia Extendida'})
+• *RSI Horario (1H):* \`${rsi1h}\` (${rsi1h > 70 ? 'Gatillo Sobrecompra > 70' : 'Momentum neutral'})
+• *Confluencia:* _${justificacion}_
 • *Posición en Cartera:* \`${pos.cantidad}\` nominales
 • *Precio Base de Compra:* ${monedaSimbolo} ${Number(pos.precio_compra_promedio || 0).toLocaleString('es-AR')}
 
-💡 _Interpretación Cuantitativa: Euforia compradora en niveles extremos. Evaluar toma parcial de ganancias o ajuste de trailing stop._
+💡 _Interpretación Cuantitativa: Euforia compradora en zonas extremas. Evaluar toma parcial de ganancias o elevación de trailing stop._
 
 ────────────────────────
 ⚙️ _CondorFi Quantitative Trading Terminal_`;
+        }
       }
 
       if (tipoAlerta) {
@@ -363,7 +418,8 @@ export default async function handler(req, res) {
           userId: pos.user_id,
           posicionId: pos.id,
           ticker,
-          rsi,
+          rsi1d,
+          rsi1h,
           precioActual,
           moneda,
           tipoAlerta,
@@ -373,11 +429,13 @@ export default async function handler(req, res) {
       }
     }
 
-    // 4. Despachar notificaciones a través de la API oficial de Telegram
+    // 4. Despachar notificaciones a Telegram y persistir en Supabase 'alertas_historial'
     let despachosExitosos = 0;
     let despachosOmitidos = 0;
+    let registrosPersistidos = 0;
 
     for (const alerta of alertasADespachar) {
+      // A. Envío vía Telegram Bot
       const resultadoEnvio = await enviarNotificacionTelegram({
         user_id: alerta.userId,
         texto: alerta.mensajeMarkdown,
@@ -391,13 +449,41 @@ export default async function handler(req, res) {
         despachosOmitidos++;
         console.warn(`[Cron Scanner] No se envió alerta para ${alerta.ticker}:`, resultadoEnvio.error);
       }
+
+      // B. Persistencia auditable en Supabase 'alertas_historial'
+      if (supabase) {
+        try {
+          const { error: errInsertAlert } = await supabase
+            .from('alertas_historial')
+            .insert({
+              user_id: alerta.userId,
+              ticker: alerta.ticker,
+              tipo_alerta: alerta.tipoAlerta,
+              rsi_1d: alerta.rsi1d,
+              rsi_1h: alerta.rsi1h,
+              precio_actual: alerta.precioActual,
+              moneda: alerta.moneda,
+              mensaje: alerta.textoResumido,
+              leida: false,
+              timestamp: new Date().toISOString()
+            });
+
+          if (!errInsertAlert) {
+            registrosPersistidos++;
+          } else {
+            console.warn('[Cron Scanner] Aviso al registrar en alertas_historial:', errInsertAlert.message);
+          }
+        } catch (eDb) {
+          console.warn('[Cron Scanner] Excepción al registrar alerta:', eDb.message);
+        }
+      }
     }
 
     const duracionMs = Math.round(performance.now() - inicio);
 
     return res.status(200).json({
       ok: true,
-      mensaje: 'Escaneo técnico MTFA completado con éxito.',
+      mensaje: 'Escaneo técnico MTFA (1D + 1H) completado con éxito.',
       timestamp: new Date().toISOString(),
       posiciones_analizadas: posiciones.length,
       activos_con_rsi: mapaDatosTecnicos.size,
@@ -406,9 +492,11 @@ export default async function handler(req, res) {
         exitosos: despachosExitosos,
         omitidos_o_sin_telegram: despachosOmitidos
       },
+      alertas_persistidas_db: registrosPersistidos,
       alertas: alertasADespachar.map(a => ({
         ticker: a.ticker,
-        rsi: a.rsi,
+        rsi_1d: a.rsi1d,
+        rsi_1h: a.rsi1h,
         precio_actual: a.precioActual,
         moneda: a.moneda,
         tipo: a.tipoAlerta,

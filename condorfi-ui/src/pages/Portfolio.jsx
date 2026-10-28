@@ -62,6 +62,7 @@ import {
   Zap,
   Info
 } from 'lucide-react';
+import PortfolioEquityCurve from '../components/PortfolioEquityCurve';
 import {
   ResponsiveContainer,
   Cell,
@@ -844,6 +845,25 @@ export default function Portfolio() {
 
   return (
     <div className="space-y-6">
+      {/* Banner Informativo para Modo Demo */}
+      {user?.id?.startsWith('demo-') && (
+        <div className="p-3.5 bg-gradient-to-r from-amber-500/10 via-orange-500/10 to-amber-500/10 border border-amber-300 rounded-2xl flex items-center justify-between text-xs font-mono text-amber-900 shadow-xs">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-2.5 w-2.5 relative">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-amber-500"></span>
+            </span>
+            <span>
+              <strong>MODO DEMO INSTITUCIONAL ACTIVO:</strong> Estás explorando con un portafolio simulado.
+              Los precios cotizan en tiempo real vía Yahoo Finance y Dólar Cripto.
+            </span>
+          </div>
+          <span className="hidden sm:inline-block text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-200 text-amber-900 border border-amber-300">
+            Sandbox Libre
+          </span>
+        </div>
+      )}
+
       {/* =========================================================================
           1. HEADER INSTITUCIONAL DEL PORTAFOLIO
       ========================================================================== */}
@@ -1014,6 +1034,14 @@ export default function Portfolio() {
           )}
         </div>
       </div>
+
+      {/* =========================================================================
+          2.5 CURVA DE RENDIMIENTO HISTÓRICO (EQUITY CURVE VS BENCHMARK S&P 500)
+      ========================================================================== */}
+      <PortfolioEquityCurve
+        posiciones={posicionesFormateadas}
+        valorTotalCartera={metricasConsolidadas.exposicionTotal}
+      />
 
       {/* =========================================================================
           3. DISTRIBUCIÓN DE ACTIVOS & ASIGNACIÓN DE CARTERA

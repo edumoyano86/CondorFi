@@ -19,6 +19,7 @@ import { useCurrency } from '../context/CurrencyContext';
 import { useAuth } from '../context/AuthContext';
 import { clasificarActivo } from '../components/ScreenerDataGrid';
 import TelegramConfig from '../components/TelegramConfig';
+import NotificationCenter from '../components/NotificationCenter';
 import {
   LayoutDashboard,
   Home as HomeIcon,
@@ -470,6 +471,9 @@ export default function Layout({
               )}
             </button>
 
+            {/* Centro de Notificaciones & Feed MTFA */}
+            <NotificationCenter />
+
             {/* Botón de Vinculación de Telegram */}
             <button
               type="button"
@@ -497,6 +501,14 @@ export default function Layout({
               <span>{ultimaSincronizacion}</span>
             </div>
 
+            {/* Badge Especial de Modo Demo */}
+            {user?.id?.startsWith('demo-') && (
+              <div className="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-700 text-[11px] font-mono font-bold shadow-2xs">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+                <span>MODO DEMO</span>
+              </div>
+            )}
+
             {/* Estado de Autenticación Institucional (SaaS) */}
             {isAuthenticated ? (
               <div className="flex items-center gap-1.5 pl-2 border-l border-slate-200">
@@ -509,7 +521,7 @@ export default function Layout({
                       {user?.user_metadata?.nombre || user?.email?.split('@')[0]}
                     </span>
                     <span className="block text-[9px] font-mono text-emerald-400 font-semibold leading-tight">
-                      PRO TRADER
+                      {user?.id?.startsWith('demo-') ? 'DEMO TRADER' : 'PRO TRADER'}
                     </span>
                   </div>
                 </div>

@@ -220,13 +220,14 @@ Cuando el escáner detecta condiciones de sobrecompra o sobreventa en activos de
 - [x] Motor de escaneo técnico con cálculo de RSI(14) de Wilder.
 - [x] Integración de Telegram Bot con autenticación OTP y Webhooks.
 - [x] Automatización bursátil mediante GitHub Actions.
-- [ ] **Historial de Alertas en Dashboard:** Registro auditable en Supabase para consultar todas las alertas pasadas en la UI.
-- [ ] **Modo Demostración / Invitado ("One-Click Demo"):** Permitir a reclutadores explorar la terminal con un portafolio simulado sin registro obligatorio.
-- [ ] **Confluencia Multi-Temporal (MTFA 1D + 1H):** Exigir confirmación de tendencia en gráfico horario antes de disparar señal de compra/venta.
-- [ ] **Curva de Rendimiento Histórico (Equity Curve):** Gráfica de evolución patrimonial comparada contra el benchmark del S&P 500 y Merval.
+- [x] **Historial de Alertas en Dashboard:** Registro auditable en Supabase y Centro de Notificaciones en la UI con feed en vivo.
+- [x] **Modo Demostración / Invitado ("One-Click Demo"):** Botón de acceso inmediato desde la Landing/Login sin registro obligatorio.
+- [x] **Confluencia Multi-Temporal (MTFA 1D + 1H):** Confirmación combinada de micro-impulso horario y macro-tendencia diaria (Wilder RSI).
+- [x] **Curva de Rendimiento Histórico (Equity Curve):** Gráfica interactiva de evolución patrimonial comparada contra el S&P 500 (SPY) con cálculo de Alpha, Beta y Sharpe Ratio.
 
 ---
 
 ## 📜 Disclaimer
 
 > **Aviso Legal:** CondorFi es un desarrollo de software con fines demostrativos y de investigación cuantitativa. Las señales, indicadores técnicos y proyecciones calculadas por el sistema no constituyen asesoramiento financiero, recomendaciones de compra/venta ni intermediación bursátil bajo ninguna circunstancia.
+

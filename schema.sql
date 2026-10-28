@@ -216,4 +216,52 @@ VALUES
 )
 ON CONFLICT DO NOTHING;
 
+-- ==============================================================================
+-- Fase Institucional: Historial de Alertas Cuantitativas MTFA
+-- Tabla: alertas_historial
+-- ==============================================================================
+CREATE TABLE IF NOT EXISTS public.alertas_historial (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    ticker VARCHAR(30) NOT NULL,
+    tipo_alerta VARCHAR(40) NOT NULL, -- 'COMPRA_SOBREVENTA', 'VENTA_SOBRECOMPRA', 'TAKE_PROFIT', 'STOP_LOSS'
+    rsi_1d NUMERIC(8, 2),
+    rsi_1h NUMERIC(8, 2),
+    precio_actual NUMERIC(18, 4) NOT NULL,
+    moneda VARCHAR(10) NOT NULL DEFAULT 'USD',
+    mensaje TEXT NOT NULL,
+    leida BOOLEAN NOT NULL DEFAULT false,
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Índices de consulta rápida para notificaciones
+CREATE INDEX IF NOT EXISTS idx_alertas_historial_user_id 
+    ON public.alertas_historial (user_id);
+
+CREATE INDEX IF NOT EXISTS idx_alertas_historial_timestamp 
+    ON public.alertas_historial (timestamp DESC);
+
+-- Habilitar RLS en historial de alertas
+ALTER TABLE public.alertas_historial ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Los usuarios pueden ver sus propias alertas o publicas"
+    ON public.alertas_historial
+    FOR SELECT
+    TO authenticated, anon, service_role
+    USING (auth.uid() = user_id OR user_id IS NULL);
+
+CREATE POLICY "Permitir insercion de alertas"
+    ON public.alertas_historial
+    FOR INSERT
+    TO authenticated, anon, service_role
+    WITH CHECK (true);
+
+CREATE POLICY "Permitir actualizar leida"
+    ON public.alertas_historial
+    FOR UPDATE
+    TO authenticated, service_role
+    USING (auth.uid() = user_id OR user_id IS NULL);
+
+
 

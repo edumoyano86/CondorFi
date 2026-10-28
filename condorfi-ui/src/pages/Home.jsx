@@ -47,7 +47,14 @@ import {
 
 export default function Home() {
   const navigate = useNavigate();
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated, user, loginDemo } = useAuth();
+
+  const handleExplorarDemo = () => {
+    if (typeof loginDemo === 'function') {
+      loginDemo('Portfolio Reviewer');
+    }
+    navigate('/dashboard');
+  };
 
   // Snapshot representativo de activos para el radar en vivo
   const ACTIVOS_DESTACADOS = [
@@ -165,6 +172,14 @@ export default function Home() {
               </Link>
             ) : (
               <>
+                <button
+                  type="button"
+                  onClick={handleExplorarDemo}
+                  className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-mono font-bold text-amber-300 hover:text-amber-200 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 transition-all cursor-pointer"
+                >
+                  <Zap className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Modo Demo</span>
+                </button>
                 <Link
                   to="/login"
                   className="px-3.5 py-2 rounded-xl text-xs font-mono font-semibold text-slate-300 hover:text-white hover:bg-slate-850 transition-colors cursor-pointer"
@@ -210,23 +225,32 @@ export default function Home() {
           alertas push en vivo vía Telegram y aislamiento de portafolios con seguridad de base de datos RLS.
         </p>
 
-        {/* Botones de Acción (CTA Principal: 'Comenzar a Operar' hacia /login) */}
-        <div className="flex flex-col sm:flex-row items-center justify-center gap-4 max-w-md mx-auto mb-16">
+        {/* Botones de Acción (CTA Principal: 'Comenzar a Operar' + 'Explorar Modo Demo') */}
+        <div className="flex flex-col sm:flex-row items-center justify-center gap-3 max-w-2xl mx-auto mb-16">
           <Link
             to="/login"
-            className="w-full sm:w-auto inline-flex items-center justify-center gap-2.5 px-8 py-4 rounded-xl font-mono font-bold text-sm bg-gradient-to-r from-orange-600 via-amber-600 to-orange-500 hover:from-orange-500 hover:to-amber-500 text-white shadow-xl shadow-orange-600/30 hover:shadow-orange-600/50 hover:scale-[1.02] active:scale-[0.98] transition-all duration-200 cursor-pointer"
+            className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-7 py-3.5 rounded-xl font-mono font-bold text-sm bg-gradient-to-r from-orange-600 via-amber-600 to-orange-500 hover:from-orange-500 hover:to-amber-500 text-white shadow-xl shadow-orange-600/30 hover:shadow-orange-600/50 hover:scale-[1.02] active:scale-[0.98] transition-all duration-200 cursor-pointer"
           >
             <UserCheck className="w-4 h-4" />
             <span>Comenzar a Operar</span>
             <ArrowRight className="w-4 h-4 ml-1" />
           </Link>
 
+          <button
+            type="button"
+            onClick={handleExplorarDemo}
+            className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-7 py-3.5 rounded-xl font-mono font-bold text-sm bg-slate-900/90 hover:bg-slate-800 border border-amber-500/40 hover:border-amber-400 text-amber-300 shadow-md shadow-amber-500/10 hover:scale-[1.02] active:scale-[0.98] transition-all duration-200 cursor-pointer"
+          >
+            <Zap className="w-4 h-4 text-amber-400" />
+            <span>Explorar Modo Demo (1 Clic)</span>
+          </button>
+
           <a
             href="#beneficios"
-            className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-7 py-4 rounded-xl font-mono font-semibold text-sm bg-slate-900/90 hover:bg-slate-800 border border-slate-700/80 hover:border-slate-500 text-slate-200 transition-all duration-200 cursor-pointer shadow-sm"
+            className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-3.5 rounded-xl font-mono font-semibold text-sm bg-slate-950/80 hover:bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 transition-all duration-200 cursor-pointer"
           >
-            <Layers className="w-4 h-4 text-orange-400" />
-            <span>Explorar Beneficios</span>
+            <Layers className="w-4 h-4 text-slate-400" />
+            <span>Beneficios</span>
           </a>
         </div>
 
