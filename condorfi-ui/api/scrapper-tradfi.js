@@ -250,70 +250,6 @@ export default async function handler(req, res) {
 
     const fallidosCount = Math.max(0, tickersAConsultar.length - exitosos.length);
 
-    // Formateo integral de los activos para consumo directo del Screener / UI
-    const screenerFormateado = exitosos.map(item => {
-      const ticker = item.ticker;
-      const precioActual = Number(item.precio_actual || 0);
-      const precioApertura = Number(item.precio_apertura || precioActual);
-      const variacion24h = precioApertura > 0
-        ? Number((((precioActual - precioApertura) / precioApertura) * 100).toFixed(2))
-        : 0;
-      const moneda = item.moneda || (ticker.endsWith('.BA') || ticker === '^MERV' ? 'ARS' : 'USD');
-
-      // Clasificación de mercado
-      let tipoMercado = 'tradfi';
-      let mercado = 'Wall Street';
-      if (ticker.endsWith('.BA') || ticker === '^MERV') {
-        mercado = 'BYMA';
-      } else if (ETFS_ESTRATEGICOS.includes(ticker)) {
-        mercado = 'Dividend ETFs';
-      } else if (INDICES_GLOBALES.includes(ticker) || ticker.startsWith('^')) {
-        mercado = 'Global Benchmark';
-      } else if (TRADFI_ARG_BONOS.includes(ticker) && (ticker.includes('30') || ticker.includes('29') || ticker.includes('35') || ticker.includes('38') || ticker === 'TLT')) {
-        mercado = 'Renta Fija';
-        tipoMercado = 'bonos';
-      }
-
-      const score = Math.min(99, Math.max(1, Math.round(50 + (variacion24h * 5))));
-      const dictamen = variacion24h >= 1.5 ? 'BUY' : (variacion24h <= -1.5 ? 'SELL' : 'HOLD');
-
-      return {
-        activo: ticker,
-        ticker,
-        nombre: ticker,
-        mercado,
-        tipoMercado,
-        subTipo: ETFS_ESTRATEGICOS.includes(ticker) 
-          ? 'etfs_estrategicos' 
-          : (INDICES_GLOBALES.includes(ticker) ? 'indices_globales' : 'acciones_tech'),
-        moneda,
-        precioActual,
-        precioApertura,
-        variacion24h,
-        spreadActual: variacion24h,
-        condorScore: score,
-        dictamen,
-        alineacion_temporal: variacion24h > 0 ? 'ALINEADO_ALCISTA' : 'ALINEADO_BAJISTA',
-        rsi: Number((50 + variacion24h * 2).toFixed(1)),
-        macd: {
-          macd: Number((variacion24h * 0.1).toFixed(2)),
-          signal: 0,
-          histogram: Number((variacion24h * 0.1).toFixed(2)),
-          cruceAlcista: variacion24h > 0,
-          cruceBajista: variacion24h < 0
-        },
-        bollinger: {
-          sma: precioActual,
-          upper: Number((precioActual * 1.02).toFixed(2)),
-          lower: Number((precioActual * 0.98).toFixed(2)),
-          bandwidth: 4.0,
-          percentB: 0.5
-        },
-        mensaje: `Cotización institucional en tiempo real (${mercado})`,
-        timestamp: item.timestamp || new Date().toISOString()
-      };
-    });
-
     // 3. Resolución defensiva del cliente Supabase
     let db = supabase;
     if (!db) {
@@ -330,8 +266,7 @@ export default async function handler(req, res) {
     if (db && exitosos.length > 0) {
       const { data, error } = await db
         .from('cotizaciones_tradfi')
-        .insert(exitosos)
-        .select();
+        .insert(exitosos);
 
       if (error) {
         console.warn('[Scrapper TradFi] Aviso en bulk insert:', error.message);
@@ -342,18 +277,16 @@ export default async function handler(req, res) {
 
     const duracionMs = Math.round(performance.now() - inicio);
 
-    // 5. Respuesta HTTP 200 con telemetría de ejecución concurrente y arrays consolidados
+    // 5. Respuesta HTTP 200 ultraligera de confirmación (sin arrays pesados de datos para evitar 'Response data too large' en cron)
     return res.status(200).json({
-      status: "Captura TradFi Masiva Exitosa",
-      timestamp: new Date().toISOString(),
-      duracionMs,
-      totalSolicitados: tickersAConsultar.length,
-      totalExitosos: exitosos.length,
-      totalFallidos: fallidosCount,
-      registrosInsertados: insertados,
-      activos: exitosos,
-      screener: screenerFormateado,
-      fallidos: []
+      ok: true,
+      message: "Scraping TradFi completado exitosamente",
+      activos_procesados: exitosos.length,
+      registros_insertados: insertados,
+      total_solicitados: tickersAConsultar.length,
+      fallidos: fallidosCount,
+      duracion_ms: duracionMs,
+      timestamp: new Date().toISOString()
     });
 
   } catch (error) {
